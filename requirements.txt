@@ -1,0 +1,12 @@
+Flask==2.0.3
+google-api-python-client==2.31.0
+google-auth==1.35.0
+pydub==0.25.1
+moviepy==1.0.3
+SpeechRecognition==3.8.1
+googletrans==4.0.0-rc1
+gTTS==2.2.3
+pysrt==1.1.2
+webvtt-py==0.4.1
+pytest==6.2.5
+python-dotenv==0.19.2

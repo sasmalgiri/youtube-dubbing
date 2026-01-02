@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "youtube-dubbing-app"
+version = "0.1.0"
+description = "A video dubbing application that processes YouTube videos and generates dubbed audio tracks with subtitles."
+authors = ["Your Name <youremail@example.com>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+requests = "^2.25.1"
+pydub = "^0.25.1"
+moviepy = "^1.0.3"
+google-cloud-speech = "^2.7.2"
+google-cloud-translate = "^3.8.1"
+gTTS = "^2.2.3"
+pysrt = "^1.1.0"
+webvtt-py = "^0.4.0"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
