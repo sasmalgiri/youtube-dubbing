@@ -13,9 +13,9 @@ export default function HomePage() {
     const [voice, setVoice] = useState('hi-IN-SwaraNeural');
     const [settings, setSettings] = useState<DubbingSettings>({
         asr_model: 'small',
-        tts_rate: '+0%',
-        mix_original: true,
-        original_volume: 0.15,
+        tts_rate: '-5%',
+        mix_original: false,
+        original_volume: 0.10,
         time_aligned: true,
     });
     const [submitting, setSubmitting] = useState(false);

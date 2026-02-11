@@ -46,9 +46,9 @@ class PipelineConfig:
     target_language: str = "hi"
     asr_model: str = "small"
     tts_voice: str = "hi-IN-SwaraNeural"
-    tts_rate: str = "+0%"
-    mix_original: bool = True
-    original_volume: float = 0.15
+    tts_rate: str = "-5%"
+    mix_original: bool = False
+    original_volume: float = 0.10
     time_aligned: bool = True
 
 
@@ -210,7 +210,8 @@ class Pipeline:
             # Get video title first (separate call)
             try:
                 title_result = subprocess.run(
-                    [self._ytdlp, "--print", "%(title)s", "--no-download", src],
+                    [self._ytdlp, "--cookies-from-browser", "chrome",
+                     "--print", "%(title)s", "--no-download", src],
                     capture_output=True, text=True, timeout=30,
                 )
                 if title_result.returncode == 0 and title_result.stdout.strip():
@@ -225,6 +226,7 @@ class Pipeline:
                 subprocess.run(
                     [
                         self._ytdlp,
+                        "--cookies-from-browser", "chrome",
                         "--ffmpeg-location", str(Path(self._ffmpeg).parent),
                         "-f", "bv*+ba/b",
                         "--merge-output-format", "mp4",
@@ -236,10 +238,7 @@ class Pipeline:
                 )
             except subprocess.CalledProcessError as e:
                 stderr = e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or "Unknown error")
-                raise RuntimeError(
-                    f"yt-dlp failed: {stderr}\n"
-                    "Ensure you own the content or try: yt-dlp --cookies-from-browser chrome <url>"
-                ) from e
+                raise RuntimeError(f"yt-dlp failed: {stderr}") from e
 
             # Find downloaded file
             mp4 = list(self.cfg.work_dir.glob("source.mp4"))
@@ -297,36 +296,77 @@ class Pipeline:
 
         return segments
 
+    # ── Paragraph grouping ──────────────────────────────────────────────
+    @staticmethod
+    def _group_into_paragraphs(segments: List[Dict], pause_threshold: float = 1.5) -> List[List[Dict]]:
+        """Group nearby segments into paragraphs for natural TTS.
+
+        Segments separated by less than pause_threshold seconds are merged
+        into one paragraph. This gives TTS enough context for natural prosody
+        instead of synthesizing isolated phrases.
+        """
+        if not segments:
+            return []
+
+        paragraphs: List[List[Dict]] = [[segments[0]]]
+        for seg in segments[1:]:
+            prev_end = paragraphs[-1][-1].get("end", 0.0)
+            cur_start = seg.get("start", 0.0)
+            if (cur_start - prev_end) > pause_threshold:
+                paragraphs.append([seg])
+            else:
+                paragraphs[-1].append(seg)
+
+        return paragraphs
+
     # ── Step 4: Translate ────────────────────────────────────────────────
     def _translate_segments(self, segments: List[Dict]) -> List[Dict]:
         from deep_translator import GoogleTranslator
 
         translator = GoogleTranslator(source="auto", target=self.cfg.target_language)
-        text_segments = [s for s in segments if s.get("text", "").strip()]
-        total = len(text_segments)
 
-        for i, seg in enumerate(segments):
-            text = seg.get("text", "").strip()
-            if not text:
-                seg["text_translated"] = ""
-                continue
+        # Group into paragraphs for better translation context
+        text_segments = [s for s in segments if s.get("text", "").strip()]
+        paragraphs = self._group_into_paragraphs(text_segments)
+        total_paras = len(paragraphs)
+
+        para_idx = 0
+        for para in paragraphs:
+            # Join paragraph text for context-aware translation
+            full_text = " ".join(s.get("text", "").strip() for s in para)
 
             retries = 3
+            translated = full_text
             for attempt in range(retries):
                 try:
-                    seg["text_translated"] = translator.translate(text)
+                    translated = translator.translate(full_text)
                     break
                 except Exception:
                     if attempt < retries - 1:
                         time.sleep(1 * (attempt + 1))
-                    else:
-                        seg["text_translated"] = text  # fallback to original
 
+            # Store translated paragraph text on the first segment of the group
+            # and mark the rest as part of the group
+            for i, seg in enumerate(para):
+                if i == 0:
+                    seg["text_translated"] = translated
+                    seg["_para_start"] = True
+                else:
+                    seg["text_translated"] = ""
+                    seg["_para_start"] = False
+
+            para_idx += 1
             self._report(
                 "translate",
-                (i + 1) / max(total, 1),
-                f"Translated {i + 1}/{total} segments",
+                para_idx / max(total_paras, 1),
+                f"Translated {para_idx}/{total_paras} paragraphs",
             )
+
+        # Mark empty segments
+        for seg in segments:
+            if "text_translated" not in seg:
+                seg["text_translated"] = ""
+                seg["_para_start"] = False
 
         return segments
 
@@ -338,25 +378,26 @@ class Pipeline:
         voice = self.cfg.tts_voice
         rate = self.cfg.tts_rate
 
-        async def synthesize_segment(text: str, seg_out: Path):
+        async def synthesize_paragraph(text: str, seg_out: Path):
             communicate = edge_tts.Communicate(text, voice, rate=rate)
             await communicate.save(str(seg_out))
 
         async def run_all():
             seg_data: List[tuple] = []
-            total = len(text_segments)
 
-            for i, seg in enumerate(text_segments):
-                text = seg.get("text_translated", seg.get("text", "")).strip()
-                if not text:
-                    continue
+            # Collect paragraphs (first segment of each group has the text)
+            para_segments = [s for s in text_segments
+                            if s.get("_para_start", True) and s.get("text_translated", "").strip()]
+            total = len(para_segments)
 
+            for i, seg in enumerate(para_segments):
+                text = seg["text_translated"].strip()
                 start_time = seg.get("start", 0.0)
-                seg_mp3 = self.cfg.work_dir / f"tts_seg_{i:04d}.mp3"
-                seg_wav = self.cfg.work_dir / f"tts_seg_{i:04d}.wav"
+                seg_mp3 = self.cfg.work_dir / f"tts_para_{i:04d}.mp3"
+                seg_wav = self.cfg.work_dir / f"tts_para_{i:04d}.wav"
 
                 try:
-                    await synthesize_segment(text, seg_mp3)
+                    await synthesize_paragraph(text, seg_mp3)
                     subprocess.run(
                         [
                             self._ffmpeg, "-y", "-i", str(seg_mp3),
@@ -368,11 +409,11 @@ class Pipeline:
                     )
                     seg_data.append((start_time, seg_wav))
                 except Exception:
-                    pass  # skip failed segments
+                    pass  # skip failed paragraphs
                 finally:
                     seg_mp3.unlink(missing_ok=True)
 
-                self._report("synthesize", (i + 1) / total, f"Synthesized {i + 1}/{total} segments")
+                self._report("synthesize", (i + 1) / total, f"Synthesized {i + 1}/{total} paragraphs")
 
             self._build_aligned_wav(seg_data, out_wav)
 
@@ -390,24 +431,24 @@ class Pipeline:
         voice = self.cfg.tts_voice
         rate = self.cfg.tts_rate
 
-        async def synthesize_segment(text: str, seg_out: Path):
+        async def synthesize_paragraph(text: str, seg_out: Path):
             communicate = edge_tts.Communicate(text, voice, rate=rate)
             await communicate.save(str(seg_out))
 
         async def run_all():
             seg_wavs: List[Path] = []
-            total = len(text_segments)
 
-            for i, seg in enumerate(text_segments):
-                text = seg.get("text_translated", seg.get("text", "")).strip()
-                if not text:
-                    continue
+            para_segments = [s for s in text_segments
+                            if s.get("_para_start", True) and s.get("text_translated", "").strip()]
+            total = len(para_segments)
 
-                seg_mp3 = self.cfg.work_dir / f"tts_seg_{i:04d}.mp3"
-                seg_wav = self.cfg.work_dir / f"tts_seg_{i:04d}.wav"
+            for i, seg in enumerate(para_segments):
+                text = seg["text_translated"].strip()
+                seg_mp3 = self.cfg.work_dir / f"tts_para_{i:04d}.mp3"
+                seg_wav = self.cfg.work_dir / f"tts_para_{i:04d}.wav"
 
                 try:
-                    await synthesize_segment(text, seg_mp3)
+                    await synthesize_paragraph(text, seg_mp3)
                     subprocess.run(
                         [
                             self._ffmpeg, "-y", "-i", str(seg_mp3),
@@ -423,7 +464,7 @@ class Pipeline:
                 finally:
                     seg_mp3.unlink(missing_ok=True)
 
-                self._report("synthesize", (i + 1) / total, f"Synthesized {i + 1}/{total} segments")
+                self._report("synthesize", (i + 1) / total, f"Synthesized {i + 1}/{total} paragraphs")
 
             if seg_wavs:
                 with wave.open(str(out_wav), "wb") as wf:

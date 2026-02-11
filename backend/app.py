@@ -50,9 +50,9 @@ class JobCreateRequest(BaseModel):
     url: str
     voice: str = "hi-IN-SwaraNeural"
     asr_model: str = "small"
-    tts_rate: str = "+0%"
-    mix_original: bool = True
-    original_volume: float = 0.15
+    tts_rate: str = "-5%"
+    mix_original: bool = False
+    original_volume: float = 0.10
     time_aligned: bool = True
 
 
