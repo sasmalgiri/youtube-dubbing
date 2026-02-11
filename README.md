@@ -59,6 +59,45 @@ youtube-dubbing-app
 
 To run the application, use the command line interface defined in `src/cli.py`. You can download a YouTube video, transcribe it, translate the transcription, and synthesize the dubbed audio.
 
+## Web UI (Vercel) + Backend (Free)
+
+Vercel can host the **web UI**, but the actual dubbing work (FFmpeg + Whisper + TTS) must run on a separate backend.
+
+### Frontend (Vercel)
+
+The Next.js UI lives in `web/`.
+
+1) Install deps:
+
+```bash
+cd web
+npm install
+```
+
+2) Set environment variable in Vercel:
+
+- `NEXT_PUBLIC_API_BASE_URL` = your backend base URL (example: `https://your-backend.onrender.com`)
+
+3) Deploy the `web/` folder to Vercel.
+
+### Backend (Free tier suggestion: Render)
+
+The FastAPI backend lives in `backend/` and exposes:
+
+- `GET /voices`
+- `POST /jobs` (multipart upload)
+- `GET /jobs/{id}`
+- `GET /jobs/{id}/result`
+
+Local run (after installing backend deps into your Python env):
+
+```bash
+pip install -r backend/requirements.txt
+uvicorn backend.app:app --host 0.0.0.0 --port 8000
+```
+
+Then point the frontend to `http://localhost:8000`.
+
 ## Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request for any enhancements or bug fixes.

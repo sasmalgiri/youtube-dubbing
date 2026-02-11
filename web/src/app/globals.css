@@ -1,0 +1,68 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+    color-scheme: dark;
+}
+
+* {
+    scrollbar-width: thin;
+    scrollbar-color: #2d2d44 transparent;
+}
+
+*::-webkit-scrollbar {
+    width: 6px;
+}
+
+*::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+    background-color: #2d2d44;
+    border-radius: 3px;
+}
+
+body {
+    background: #0a0a0f;
+    color: #e2e8f0;
+    font-family: 'Inter', system-ui, sans-serif;
+}
+
+@layer components {
+    .glass-card {
+        @apply bg-card border border-border rounded-2xl;
+    }
+
+    .glass-card-hover {
+        @apply glass-card hover:bg-card-hover transition-colors duration-200;
+    }
+
+    .btn-primary {
+        @apply px-5 py-2.5 bg-primary hover:bg-primary-hover text-white font-medium
+               rounded-xl transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+    }
+
+    .btn-secondary {
+        @apply px-5 py-2.5 bg-white/5 hover:bg-white/10 text-text-primary font-medium
+               rounded-xl border border-border transition-all duration-200;
+    }
+
+    .btn-danger {
+        @apply px-5 py-2.5 bg-error/10 hover:bg-error/20 text-error font-medium
+               rounded-xl border border-error/20 transition-all duration-200;
+    }
+
+    .input-field {
+        @apply w-full bg-white/5 border border-border rounded-xl px-4 py-3
+               text-text-primary placeholder-text-muted outline-none
+               focus:border-primary focus:ring-1 focus:ring-primary/30 transition-all;
+    }
+
+    .label {
+        @apply text-sm font-medium text-text-secondary;
+    }
+}

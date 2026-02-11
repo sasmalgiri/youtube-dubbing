@@ -10,8 +10,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -39,6 +39,17 @@ input/*.mkv
 input/*.mov
 input/*.webm
 voices/my_voice_refs/*.wav
+
+# Web (Next.js)
+web/node_modules/
+web/.next/
+web/out/
+web/.vercel/
+web/.env.local
+
+# Backend (FastAPI)
+backend/work/
+backend/.venv/
 
 # Logs
 *.log
