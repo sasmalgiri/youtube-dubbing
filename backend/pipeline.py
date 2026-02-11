@@ -65,12 +65,52 @@ class Pipeline:
         self.video_title: str = ""
         self.cfg.work_dir.mkdir(parents=True, exist_ok=True)
 
-        # Resolve executable paths from the venv
-        venv_scripts = Path(sys.executable).parent
-        self._ytdlp = str(venv_scripts / "yt-dlp.exe") if sys.platform == "win32" else "yt-dlp"
-        if not Path(self._ytdlp).exists():
-            self._ytdlp = shutil.which("yt-dlp") or "yt-dlp"
+        # Resolve executable paths
+        self._ytdlp = self._find_executable("yt-dlp")
         self._ffmpeg = "ffmpeg"  # resolved in _ensure_ffmpeg
+
+    @staticmethod
+    def _find_executable(name: str) -> str:
+        """Find an executable by checking venv, PATH, WinGet packages, and system PATH."""
+        ext = ".exe" if sys.platform == "win32" else ""
+        full_name = name + ext
+
+        # 1. Check venv Scripts dir (where python.exe lives)
+        venv_path = Path(sys.executable).parent / full_name
+        if venv_path.exists():
+            return str(venv_path)
+
+        # 2. Check current PATH
+        found = shutil.which(name)
+        if found:
+            return found
+
+        if sys.platform == "win32":
+            # 3. Scan WinGet packages directory
+            localappdata = os.environ.get("LOCALAPPDATA", "")
+            if localappdata:
+                winget_pkgs = Path(localappdata) / "Microsoft" / "WinGet" / "Packages"
+                if winget_pkgs.exists():
+                    for exe in winget_pkgs.rglob(full_name):
+                        os.environ["PATH"] = str(exe.parent) + os.pathsep + os.environ.get("PATH", "")
+                        return str(exe)
+
+            # 4. Refresh PATH from system registry and try again
+            try:
+                result = subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-Command",
+                     "[System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User')"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    os.environ["PATH"] = result.stdout.strip() + os.pathsep + os.environ.get("PATH", "")
+                    found = shutil.which(name)
+                    if found:
+                        return found
+            except Exception:
+                pass
+
+        return name  # fallback to bare name
 
     def _report(self, step: str, progress: float, message: str):
         """Report progress to callback."""
@@ -144,42 +184,23 @@ class Pipeline:
 
     # ── FFmpeg check ─────────────────────────────────────────────────────
     def _ensure_ffmpeg(self):
-        if shutil.which("ffmpeg") is None and sys.platform == "win32":
-            # Try WinGet install path
+        resolved = self._find_executable("ffmpeg")
+
+        # Also scan WinGet install paths as last resort
+        if resolved == "ffmpeg" and sys.platform == "win32":
             localappdata = os.environ.get("LOCALAPPDATA", "")
             winget_ffmpeg = Path(localappdata) / "Microsoft" / "WinGet" / "Packages"
             if winget_ffmpeg.exists():
-                for pkg in winget_ffmpeg.iterdir():
-                    if pkg.name.startswith("Gyan.FFmpeg"):
-                        for sub in pkg.rglob("ffmpeg.exe"):
-                            bin_path = sub.parent
-                            os.environ["PATH"] = str(bin_path) + os.pathsep + os.environ.get("PATH", "")
-                            break
-
-            # Also try common install paths
-            common_paths = [
-                Path(os.environ.get("ProgramFiles", "")) / "ffmpeg" / "bin",
-                Path(os.environ.get("ProgramFiles(x86)", "")) / "ffmpeg" / "bin",
-                Path(os.environ.get("USERPROFILE", "")) / "scoop" / "shims",
-            ]
-            for p in common_paths:
-                if (p / "ffmpeg.exe").exists():
-                    os.environ["PATH"] = str(p) + os.pathsep + os.environ.get("PATH", "")
+                for exe in winget_ffmpeg.rglob("ffmpeg.exe"):
+                    resolved = str(exe)
+                    os.environ["PATH"] = str(exe.parent) + os.pathsep + os.environ.get("PATH", "")
                     break
 
-            # Try refreshing PATH from system environment
-            if shutil.which("ffmpeg") is None:
-                sys_path = os.popen('powershell.exe -NoProfile -Command "[System.Environment]::GetEnvironmentVariable(\'Path\',\'Machine\')"').read().strip()
-                user_path = os.popen('powershell.exe -NoProfile -Command "[System.Environment]::GetEnvironmentVariable(\'Path\',\'User\')"').read().strip()
-                if sys_path or user_path:
-                    os.environ["PATH"] = sys_path + os.pathsep + user_path + os.pathsep + os.environ.get("PATH", "")
-
-        ffmpeg_path = shutil.which("ffmpeg")
-        if ffmpeg_path is None:
+        if resolved == "ffmpeg" and shutil.which("ffmpeg") is None:
             raise RuntimeError(
                 "FFmpeg not found! Install: winget install Gyan.FFmpeg"
             )
-        self._ffmpeg = ffmpeg_path
+        self._ffmpeg = resolved
 
     # ── Step 1: Ingest ───────────────────────────────────────────────────
     def _ingest_source(self, src: str) -> Path:
@@ -204,7 +225,7 @@ class Pipeline:
                 subprocess.run(
                     [
                         self._ytdlp,
-                        "--ffmpeg-location", self._ffmpeg,
+                        "--ffmpeg-location", str(Path(self._ffmpeg).parent),
                         "-f", "bv*+ba/b",
                         "--merge-output-format", "mp4",
                         "-o", out_tpl,
