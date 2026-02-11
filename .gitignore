@@ -1,3 +1,6 @@
+# Windows artifacts
+nul
+
 # Python
 __pycache__/
 *.py[cod]
