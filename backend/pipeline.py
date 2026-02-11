@@ -65,6 +65,13 @@ class Pipeline:
         self.video_title: str = ""
         self.cfg.work_dir.mkdir(parents=True, exist_ok=True)
 
+        # Resolve executable paths from the venv
+        venv_scripts = Path(sys.executable).parent
+        self._ytdlp = str(venv_scripts / "yt-dlp.exe") if sys.platform == "win32" else "yt-dlp"
+        if not Path(self._ytdlp).exists():
+            self._ytdlp = shutil.which("yt-dlp") or "yt-dlp"
+        self._ffmpeg = "ffmpeg"  # resolved in _ensure_ffmpeg
+
     def _report(self, step: str, progress: float, message: str):
         """Report progress to callback."""
         self._on_progress(step, min(progress, 1.0), message)
@@ -138,22 +145,41 @@ class Pipeline:
     # ── FFmpeg check ─────────────────────────────────────────────────────
     def _ensure_ffmpeg(self):
         if shutil.which("ffmpeg") is None and sys.platform == "win32":
+            # Try WinGet install path
             localappdata = os.environ.get("LOCALAPPDATA", "")
             winget_ffmpeg = Path(localappdata) / "Microsoft" / "WinGet" / "Packages"
             if winget_ffmpeg.exists():
                 for pkg in winget_ffmpeg.iterdir():
                     if pkg.name.startswith("Gyan.FFmpeg"):
-                        for sub in pkg.iterdir():
-                            if sub.is_dir():
-                                bin_path = sub / "bin"
-                                if bin_path.exists() and (bin_path / "ffmpeg.exe").exists():
-                                    os.environ["PATH"] = str(bin_path) + os.pathsep + os.environ.get("PATH", "")
-                                    break
+                        for sub in pkg.rglob("ffmpeg.exe"):
+                            bin_path = sub.parent
+                            os.environ["PATH"] = str(bin_path) + os.pathsep + os.environ.get("PATH", "")
+                            break
 
-        if shutil.which("ffmpeg") is None:
+            # Also try common install paths
+            common_paths = [
+                Path(os.environ.get("ProgramFiles", "")) / "ffmpeg" / "bin",
+                Path(os.environ.get("ProgramFiles(x86)", "")) / "ffmpeg" / "bin",
+                Path(os.environ.get("USERPROFILE", "")) / "scoop" / "shims",
+            ]
+            for p in common_paths:
+                if (p / "ffmpeg.exe").exists():
+                    os.environ["PATH"] = str(p) + os.pathsep + os.environ.get("PATH", "")
+                    break
+
+            # Try refreshing PATH from system environment
+            if shutil.which("ffmpeg") is None:
+                sys_path = os.popen('powershell.exe -NoProfile -Command "[System.Environment]::GetEnvironmentVariable(\'Path\',\'Machine\')"').read().strip()
+                user_path = os.popen('powershell.exe -NoProfile -Command "[System.Environment]::GetEnvironmentVariable(\'Path\',\'User\')"').read().strip()
+                if sys_path or user_path:
+                    os.environ["PATH"] = sys_path + os.pathsep + user_path + os.pathsep + os.environ.get("PATH", "")
+
+        ffmpeg_path = shutil.which("ffmpeg")
+        if ffmpeg_path is None:
             raise RuntimeError(
                 "FFmpeg not found! Install: winget install Gyan.FFmpeg"
             )
+        self._ffmpeg = ffmpeg_path
 
     # ── Step 1: Ingest ───────────────────────────────────────────────────
     def _ingest_source(self, src: str) -> Path:
@@ -163,7 +189,7 @@ class Pipeline:
             # Get video title first (separate call)
             try:
                 title_result = subprocess.run(
-                    ["yt-dlp", "--print", "%(title)s", "--no-download", src],
+                    [self._ytdlp, "--print", "%(title)s", "--no-download", src],
                     capture_output=True, text=True, timeout=30,
                 )
                 if title_result.returncode == 0 and title_result.stdout.strip():
@@ -177,7 +203,8 @@ class Pipeline:
             try:
                 subprocess.run(
                     [
-                        "yt-dlp",
+                        self._ytdlp,
+                        "--ffmpeg-location", self._ffmpeg,
                         "-f", "bv*+ba/b",
                         "--merge-output-format", "mp4",
                         "-o", out_tpl,
@@ -215,7 +242,7 @@ class Pipeline:
         wav = self.cfg.work_dir / "audio_raw.wav"
         subprocess.run(
             [
-                "ffmpeg", "-y", "-i", str(video_path),
+                self._ffmpeg, "-y", "-i", str(video_path),
                 "-vn", "-ac", str(self.N_CHANNELS), "-ar", str(self.SAMPLE_RATE),
                 "-acodec", "pcm_s16le", str(wav),
             ],
@@ -311,7 +338,7 @@ class Pipeline:
                     await synthesize_segment(text, seg_mp3)
                     subprocess.run(
                         [
-                            "ffmpeg", "-y", "-i", str(seg_mp3),
+                            self._ffmpeg, "-y", "-i", str(seg_mp3),
                             "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
                             str(seg_wav),
                         ],
@@ -362,7 +389,7 @@ class Pipeline:
                     await synthesize_segment(text, seg_mp3)
                     subprocess.run(
                         [
-                            "ffmpeg", "-y", "-i", str(seg_mp3),
+                            self._ffmpeg, "-y", "-i", str(seg_mp3),
                             "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
                             str(seg_wav),
                         ],
@@ -426,7 +453,7 @@ class Pipeline:
         mixed = self.cfg.work_dir / "audio_mixed.wav"
         subprocess.run(
             [
-                "ffmpeg", "-y",
+                self._ffmpeg, "-y",
                 "-i", str(tts),
                 "-i", str(original),
                 "-filter_complex",
@@ -445,7 +472,7 @@ class Pipeline:
     def _mux_replace_audio(self, video_path: Path, audio_path: Path, output_path: Path):
         subprocess.run(
             [
-                "ffmpeg", "-y",
+                self._ffmpeg, "-y",
                 "-i", str(video_path),
                 "-i", str(audio_path),
                 "-c:v", "copy",
