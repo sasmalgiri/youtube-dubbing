@@ -351,82 +351,39 @@ class Pipeline:
 
     # ── Step 5: Continuous TTS ────────────────────────────────────────────
     def _tts_continuous(self, translated_text: str) -> Path:
-        """Synthesize the entire translated narrative as one continuous audio."""
+        """Synthesize the entire translated narrative as ONE single TTS call."""
         import edge_tts
 
+        out_mp3 = self.cfg.work_dir / "tts_full.mp3"
         out_wav = self.cfg.work_dir / "tts_full.wav"
         voice = self.cfg.tts_voice
         rate = self.cfg.tts_rate
 
-        # Edge-TTS can handle long text, but split at ~2000 chars for reliability
-        chunks = self._split_text_for_tts(translated_text, max_chars=2000)
-        total = len(chunks)
+        self._report("synthesize", 0.1, "Generating speech (single voice)...")
 
-        async def synthesize_chunk(text: str, out_path: Path):
-            communicate = edge_tts.Communicate(text, voice, rate=rate)
-            await communicate.save(str(out_path))
+        async def synthesize():
+            communicate = edge_tts.Communicate(translated_text, voice, rate=rate)
+            await communicate.save(str(out_mp3))
 
-        async def run_all():
-            chunk_wavs: List[Path] = []
+        asyncio.run(synthesize())
 
-            for i, chunk in enumerate(chunks):
-                chunk_mp3 = self.cfg.work_dir / f"tts_chunk_{i:04d}.mp3"
-                chunk_wav = self.cfg.work_dir / f"tts_chunk_{i:04d}.wav"
+        if not out_mp3.exists() or out_mp3.stat().st_size == 0:
+            raise RuntimeError("TTS synthesis produced no audio")
 
-                try:
-                    await synthesize_chunk(chunk, chunk_mp3)
-                    subprocess.run(
-                        [
-                            self._ffmpeg, "-y", "-i", str(chunk_mp3),
-                            "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
-                            str(chunk_wav),
-                        ],
-                        check=True, capture_output=True,
-                    )
-                    chunk_wavs.append(chunk_wav)
-                except Exception:
-                    pass
-                finally:
-                    chunk_mp3.unlink(missing_ok=True)
+        self._report("synthesize", 0.8, "Converting to WAV...")
 
-                self._report("synthesize", (i + 1) / total,
-                             f"Synthesized {i + 1}/{total} chunks")
+        # Convert to WAV
+        subprocess.run(
+            [
+                self._ffmpeg, "-y", "-i", str(out_mp3),
+                "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
+                str(out_wav),
+            ],
+            check=True, capture_output=True,
+        )
+        out_mp3.unlink(missing_ok=True)
 
-            # Concatenate all chunks into one continuous WAV
-            if chunk_wavs:
-                with wave.open(str(out_wav), "wb") as wf:
-                    wf.setnchannels(self.N_CHANNELS)
-                    wf.setsampwidth(2)
-                    wf.setframerate(self.SAMPLE_RATE)
-                    for cw in chunk_wavs:
-                        with wave.open(str(cw), "rb") as rf:
-                            wf.writeframes(rf.readframes(rf.getnframes()))
-                        cw.unlink(missing_ok=True)
-
-        asyncio.run(run_all())
         return out_wav
-
-    @staticmethod
-    def _split_text_for_tts(text: str, max_chars: int = 2000) -> List[str]:
-        """Split text for TTS at sentence boundaries."""
-        if len(text) <= max_chars:
-            return [text]
-
-        chunks = []
-        current = ""
-        sentences = re.split(r'(?<=[.!?।,])\s+', text)
-
-        for sentence in sentences:
-            if len(current) + len(sentence) + 1 > max_chars and current:
-                chunks.append(current.strip())
-                current = sentence
-            else:
-                current = (current + " " + sentence).strip()
-
-        if current.strip():
-            chunks.append(current.strip())
-
-        return chunks if chunks else [text]
 
     # ── Audio mixing ─────────────────────────────────────────────────────
     def _mix_audio(self, original: Path, tts: Path, original_vol: float) -> Path:

@@ -55,8 +55,7 @@ export default function HomePage() {
                             <span className="text-primary"> into Hindi</span>
                         </h1>
                         <p className="text-text-secondary text-lg">
-                            Paste a YouTube URL and get an AI-dubbed video in seconds.
-                            Paste a URL, get a dubbed video with AI voice.
+                            Paste a YouTube URL and get a dubbed video with a single AI voice.
                         </p>
                     </div>
 
