@@ -12,11 +12,9 @@ export default function HomePage() {
     const router = useRouter();
     const [voice, setVoice] = useState('hi-IN-SwaraNeural');
     const [settings, setSettings] = useState<DubbingSettings>({
-        asr_model: 'small',
         tts_rate: '-5%',
         mix_original: false,
         original_volume: 0.10,
-        time_aligned: true,
     });
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -58,7 +56,7 @@ export default function HomePage() {
                         </h1>
                         <p className="text-text-secondary text-lg">
                             Paste a YouTube URL and get an AI-dubbed video in seconds.
-                            Powered by Whisper ASR and Edge-TTS.
+                            Paste a URL, get a dubbed video with AI voice.
                         </p>
                     </div>
 

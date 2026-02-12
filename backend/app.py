@@ -58,14 +58,14 @@ class JobCreateRequest(BaseModel):
 
 # ── Step weights for overall progress ────────────────────────────────────────
 
-STEP_ORDER = ["download", "extract", "transcribe", "translate", "synthesize", "assemble"]
+STEP_ORDER = ["download", "extract", "subtitles", "translate", "synthesize", "assemble"]
 STEP_WEIGHTS = {
     "download": 0.15,
     "extract": 0.05,
-    "transcribe": 0.25,
-    "translate": 0.15,
-    "synthesize": 0.30,
-    "assemble": 0.10,
+    "subtitles": 0.10,
+    "translate": 0.20,
+    "synthesize": 0.35,
+    "assemble": 0.15,
 }
 
 # ── Storage ──────────────────────────────────────────────────────────────────

@@ -26,14 +26,14 @@ from srt_utils import write_srt
 # ── Types ────────────────────────────────────────────────────────────────────
 ProgressCallback = Callable[[str, float, str], None]
 
-STEPS = ["download", "extract", "transcribe", "translate", "synthesize", "assemble"]
+STEPS = ["download", "extract", "subtitles", "translate", "synthesize", "assemble"]
 STEP_WEIGHTS = {
     "download": 0.15,
     "extract": 0.05,
-    "transcribe": 0.25,
-    "translate": 0.15,
-    "synthesize": 0.30,
-    "assemble": 0.10,
+    "subtitles": 0.10,
+    "translate": 0.20,
+    "synthesize": 0.35,
+    "assemble": 0.15,
 }
 
 
@@ -130,28 +130,21 @@ class Pipeline:
         audio_raw = self._extract_audio(video_path)
         self._report("extract", 1.0, "Audio extracted")
 
-        # Step 3: Transcribe
-        self._report("transcribe", 0.0, "Loading ASR model...")
-        self.segments = self._transcribe(audio_raw)
-        self._report("transcribe", 1.0, f"Transcribed {len(self.segments)} segments")
+        # Step 3: Fetch subtitles from YouTube (narrator's speech only)
+        self._report("subtitles", 0.0, "Fetching subtitles...")
+        subtitle_text = self._fetch_subtitles(self.cfg.source)
+        self.segments = [{"start": 0.0, "end": 0.0, "text": subtitle_text}]
+        self._report("subtitles", 1.0, f"Got {len(subtitle_text)} chars of subtitles")
 
-        # Write English SRT
-        srt_en = self.cfg.work_dir / "transcript_en.srt"
-        write_srt(self.segments, srt_en, text_key="text")
-
-        # Check for speech
-        text_segments = [s for s in self.segments if s.get("text", "").strip()]
-        if not text_segments:
-            raise RuntimeError("No speech detected in the video")
+        if not subtitle_text.strip():
+            raise RuntimeError("No subtitles found for this video")
 
         # Step 4: Translate full narrative as one piece
         self._report("translate", 0.0, "Translating to Hindi...")
-        full_text, translated_text = self._translate_full_narrative(text_segments)
-        # Store on segments for transcript viewer
-        for seg in self.segments:
-            seg["text_translated"] = ""
-        if text_segments:
-            text_segments[0]["text_translated"] = translated_text
+        full_text, translated_text = self._translate_full_narrative(
+            [{"text": subtitle_text}]
+        )
+        self.segments[0]["text_translated"] = translated_text
         self._report("translate", 1.0, "Translation complete")
 
         # Write Hindi SRT (single block)
@@ -272,30 +265,86 @@ class Pipeline:
         )
         return wav
 
-    # ── Step 3: Transcribe ───────────────────────────────────────────────
-    def _transcribe(self, wav_path: Path) -> List[Dict]:
-        from faster_whisper import WhisperModel
+    # ── Step 3: Fetch YouTube subtitles ──────────────────────────────────
+    def _fetch_subtitles(self, url: str) -> str:
+        """Download subtitles from YouTube using yt-dlp (narrator speech only)."""
+        if not re.match(r"^https?://", url):
+            raise RuntimeError("Subtitle fetch requires a YouTube URL")
 
-        self._report("transcribe", 0.1, f"Loading model ({self.cfg.asr_model})...")
-        model = WhisperModel(self.cfg.asr_model, device="cpu", compute_type="int8")
+        sub_dir = self.cfg.work_dir / "subs"
+        sub_dir.mkdir(exist_ok=True)
+        sub_tpl = str(sub_dir / "sub")
 
-        self._report("transcribe", 0.2, "Transcribing audio...")
-        seg_iter, info = model.transcribe(str(wav_path), vad_filter=True)
+        self._report("subtitles", 0.3, "Downloading subtitles from YouTube...")
 
-        segments: List[Dict] = []
-        for seg in seg_iter:
-            segments.append({
-                "start": float(seg.start),
-                "end": float(seg.end),
-                "text": seg.text.strip(),
-            })
-            self._report(
-                "transcribe",
-                min(0.2 + 0.8 * (len(segments) / max(len(segments) + 5, 1)), 0.95),
-                f"Transcribed {len(segments)} segments...",
-            )
+        # Try manual subs first, then auto-generated
+        for sub_flag in ["--write-subs", "--write-auto-subs"]:
+            try:
+                subprocess.run(
+                    [
+                        self._ytdlp,
+                        "--cookies-from-browser", "chrome",
+                        sub_flag,
+                        "--sub-langs", "en.*,en,a].*",
+                        "--sub-format", "vtt/srt/best",
+                        "--skip-download",
+                        "-o", sub_tpl,
+                        url,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    timeout=60,
+                )
+            except subprocess.CalledProcessError:
+                continue
 
-        return segments
+            # Find downloaded subtitle file
+            sub_files = list(sub_dir.glob("sub*.vtt")) + list(sub_dir.glob("sub*.srt"))
+            if sub_files:
+                self._report("subtitles", 0.7, "Parsing subtitles...")
+                text = self._parse_subtitle_file(sub_files[0])
+                if text.strip():
+                    return text
+
+        raise RuntimeError(
+            "No English subtitles found for this video. "
+            "The video may not have captions enabled."
+        )
+
+    @staticmethod
+    def _parse_subtitle_file(path: Path) -> str:
+        """Extract clean text from VTT or SRT subtitle file."""
+        content = path.read_text(encoding="utf-8", errors="ignore")
+        lines = content.split("\n")
+
+        text_lines = []
+        seen = set()
+
+        for line in lines:
+            line = line.strip()
+            # Skip VTT headers, timestamps, sequence numbers, empty lines
+            if not line:
+                continue
+            if line.startswith("WEBVTT") or line.startswith("Kind:") or line.startswith("Language:"):
+                continue
+            if re.match(r"^\d+$", line):  # SRT sequence numbers
+                continue
+            if re.match(r"[\d:.,\-\s>]+$", line):  # timestamp lines
+                continue
+            if line.startswith("NOTE"):
+                continue
+
+            # Remove VTT tags like <c>, </c>, <00:00:01.234>, alignment tags
+            clean = re.sub(r"<[^>]+>", "", line)
+            # Remove [Music], [Applause] etc.
+            clean = re.sub(r"\[.*?\]", "", clean)
+            clean = clean.strip()
+
+            if clean and clean not in seen:
+                seen.add(clean)
+                text_lines.append(clean)
+
+        return " ".join(text_lines)
 
     # ── Step 4: Translate full narrative ─────────────────────────────────
     def _translate_full_narrative(self, text_segments: List[Dict]) -> tuple:

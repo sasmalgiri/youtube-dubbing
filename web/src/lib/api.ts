@@ -12,11 +12,9 @@ export interface Voice {
 export interface JobCreateRequest {
     url: string;
     voice?: string;
-    asr_model?: string;
     tts_rate?: string;
     mix_original?: boolean;
     original_volume?: number;
-    time_aligned?: boolean;
 }
 
 export interface JobStatus {

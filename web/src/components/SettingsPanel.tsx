@@ -3,11 +3,9 @@
 import { useState } from 'react';
 
 export interface DubbingSettings {
-    asr_model: string;
     tts_rate: string;
     mix_original: boolean;
     original_volume: number;
-    time_aligned: boolean;
 }
 
 interface SettingsPanelProps {
@@ -45,31 +43,6 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
 
             {open && (
                 <div className="px-5 pb-5 space-y-5 animate-slide-up border-t border-border pt-4">
-                    {/* ASR Model */}
-                    <div>
-                        <label className="label mb-2 block">ASR Model (Speech Recognition)</label>
-                        <div className="grid grid-cols-4 gap-2">
-                            {['tiny', 'small', 'medium', 'large-v3'].map((model) => (
-                                <button
-                                    key={model}
-                                    onClick={() => update({ asr_model: model })}
-                                    className={`
-                                        py-2 px-3 rounded-lg text-xs font-medium border transition-all
-                                        ${settings.asr_model === model
-                                            ? 'border-primary bg-primary/10 text-primary-light'
-                                            : 'border-border bg-white/[0.02] text-text-secondary hover:bg-white/5'
-                                        }
-                                    `}
-                                >
-                                    {model}
-                                </button>
-                            ))}
-                        </div>
-                        <p className="text-[10px] text-text-muted mt-1">
-                            Larger models are more accurate but slower
-                        </p>
-                    </div>
-
                     {/* TTS Speech Rate */}
                     <div>
                         <label className="label mb-2 block">
@@ -129,26 +102,6 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                             />
                         </div>
                     )}
-
-                    {/* Time Alignment */}
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <p className="text-sm text-text-primary">Time-Aligned TTS</p>
-                            <p className="text-xs text-text-muted">Place dubbed audio at original timestamps</p>
-                        </div>
-                        <button
-                            onClick={() => update({ time_aligned: !settings.time_aligned })}
-                            className={`
-                                w-11 h-6 rounded-full transition-colors relative
-                                ${settings.time_aligned ? 'bg-primary' : 'bg-white/10'}
-                            `}
-                        >
-                            <div className={`
-                                w-4 h-4 rounded-full bg-white absolute top-1 transition-transform
-                                ${settings.time_aligned ? 'translate-x-6' : 'translate-x-1'}
-                            `} />
-                        </button>
-                    </div>
                 </div>
             )}
         </div>
