@@ -139,8 +139,15 @@ class Pipeline:
         if not text_segments:
             raise RuntimeError("No speech detected in the video")
 
-        # Join all speech into one continuous narrative
-        full_narration = " ".join(s["text"].strip() for s in text_segments)
+        # Join all speech into one continuous narrative with proper sentence endings
+        # Whisper segments often lack punctuation — add periods so TTS pauses between sentences
+        parts = []
+        for s in text_segments:
+            text = s["text"].strip()
+            if text and text[-1] not in ".!?।,;:":
+                text += "."
+            parts.append(text)
+        full_narration = " ".join(parts)
 
         # Step 4: Translate full narrative as one piece
         self._report("translate", 0.0, "Translating to Hindi...")
