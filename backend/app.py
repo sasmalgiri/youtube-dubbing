@@ -5,6 +5,17 @@ FastAPI server with SSE progress, YouTube URL input, and translation support.
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path as _Path
+# Load .env file for GEMINI_API_KEY etc.
+_env_file = _Path(__file__).resolve().parent / ".env"
+if _env_file.exists():
+    for _line in _env_file.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
+
 import asyncio
 import json
 import shutil
@@ -49,11 +60,9 @@ class Job:
 class JobCreateRequest(BaseModel):
     url: str
     voice: str = "hi-IN-SwaraNeural"
-    asr_model: str = "small"
     tts_rate: str = "-5%"
     mix_original: bool = False
     original_volume: float = 0.10
-    time_aligned: bool = True
 
 
 # ── Step weights for overall progress ────────────────────────────────────────
@@ -140,12 +149,10 @@ def _run_job(job: Job, req: JobCreateRequest):
             work_dir=work_dir,
             output_path=out_path,
             target_language="hi",
-            asr_model=req.asr_model,
             tts_voice=req.voice,
             tts_rate=req.tts_rate,
             mix_original=req.mix_original,
             original_volume=req.original_volume,
-            time_aligned=req.time_aligned,
         )
 
         pipeline = Pipeline(cfg, on_progress=_make_progress_callback(job))

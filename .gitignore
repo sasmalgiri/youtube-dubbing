@@ -53,6 +53,7 @@ web/.env.local
 # Backend (FastAPI)
 backend/work/
 backend/.venv/
+backend/.env
 
 # Logs
 *.log

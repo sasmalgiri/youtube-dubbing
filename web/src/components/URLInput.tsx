@@ -20,8 +20,9 @@ export default function URLInput({ onSubmit, disabled }: URLInputProps) {
     }, [url, isValid, disabled, onSubmit]);
 
     const handlePaste = useCallback((e: React.ClipboardEvent) => {
-        const pasted = e.clipboardData.getData('text');
+        const pasted = e.clipboardData.getData('text').trim();
         if (isValidYouTubeUrl(pasted)) {
+            e.preventDefault();
             setUrl(pasted);
         }
     }, []);
