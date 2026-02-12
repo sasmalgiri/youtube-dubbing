@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils';
 const STEPS = [
     { key: 'download', label: 'Download', icon: 'download' },
     { key: 'extract', label: 'Extract', icon: 'audio' },
-    { key: 'subtitles', label: 'Subtitles', icon: 'text' },
+    { key: 'transcribe', label: 'Transcribe', icon: 'text' },
     { key: 'translate', label: 'Translate', icon: 'translate' },
     { key: 'synthesize', label: 'Synthesize', icon: 'voice' },
     { key: 'assemble', label: 'Assemble', icon: 'video' },
