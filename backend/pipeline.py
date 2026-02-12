@@ -12,12 +12,11 @@ import asyncio
 import os
 import re
 import shutil
-import struct
 import subprocess
 import sys
 import time
 import wave
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -145,21 +144,23 @@ class Pipeline:
         if not text_segments:
             raise RuntimeError("No speech detected in the video")
 
-        # Step 4: Translate
+        # Step 4: Translate full narrative as one piece
         self._report("translate", 0.0, "Translating to Hindi...")
-        self.segments = self._translate_segments(self.segments)
-        self._report("translate", 1.0, f"Translated {len(text_segments)} segments")
+        full_text, translated_text = self._translate_full_narrative(text_segments)
+        # Store on segments for transcript viewer
+        for seg in self.segments:
+            seg["text_translated"] = ""
+        if text_segments:
+            text_segments[0]["text_translated"] = translated_text
+        self._report("translate", 1.0, "Translation complete")
 
-        # Write Hindi SRT
+        # Write Hindi SRT (single block)
         srt_hi = self.cfg.work_dir / "transcript_hi.srt"
         write_srt(self.segments, srt_hi, text_key="text_translated")
 
-        # Step 5: Synthesize TTS
+        # Step 5: Synthesize single continuous TTS audio
         self._report("synthesize", 0.0, f"Synthesizing Hindi audio ({self.cfg.tts_voice})...")
-        if self.cfg.time_aligned:
-            tts_wav = self._tts_time_aligned(text_segments)
-        else:
-            tts_wav = self._tts_concatenated(text_segments)
+        tts_wav = self._tts_continuous(translated_text)
 
         if not tts_wav.exists():
             raise RuntimeError("TTS synthesis failed - no output file")
@@ -296,219 +297,139 @@ class Pipeline:
 
         return segments
 
-    # ── Paragraph grouping ──────────────────────────────────────────────
-    @staticmethod
-    def _group_into_paragraphs(segments: List[Dict], pause_threshold: float = 1.5) -> List[List[Dict]]:
-        """Group nearby segments into paragraphs for natural TTS.
-
-        Segments separated by less than pause_threshold seconds are merged
-        into one paragraph. This gives TTS enough context for natural prosody
-        instead of synthesizing isolated phrases.
-        """
-        if not segments:
-            return []
-
-        paragraphs: List[List[Dict]] = [[segments[0]]]
-        for seg in segments[1:]:
-            prev_end = paragraphs[-1][-1].get("end", 0.0)
-            cur_start = seg.get("start", 0.0)
-            if (cur_start - prev_end) > pause_threshold:
-                paragraphs.append([seg])
-            else:
-                paragraphs[-1].append(seg)
-
-        return paragraphs
-
-    # ── Step 4: Translate ────────────────────────────────────────────────
-    def _translate_segments(self, segments: List[Dict]) -> List[Dict]:
+    # ── Step 4: Translate full narrative ─────────────────────────────────
+    def _translate_full_narrative(self, text_segments: List[Dict]) -> tuple:
+        """Join all speech into one narrative, translate as a whole."""
         from deep_translator import GoogleTranslator
 
+        # Combine all transcribed text into one continuous story
+        full_text = " ".join(s.get("text", "").strip() for s in text_segments if s.get("text", "").strip())
+        self._report("translate", 0.2, f"Translating {len(full_text)} characters...")
+
+        # Google Translate has a 5000-char limit per request, split if needed
         translator = GoogleTranslator(source="auto", target=self.cfg.target_language)
+        chunks = self._split_text_for_translation(full_text, max_chars=4500)
+        translated_parts = []
 
-        # Group into paragraphs for better translation context
-        text_segments = [s for s in segments if s.get("text", "").strip()]
-        paragraphs = self._group_into_paragraphs(text_segments)
-        total_paras = len(paragraphs)
-
-        para_idx = 0
-        for para in paragraphs:
-            # Join paragraph text for context-aware translation
-            full_text = " ".join(s.get("text", "").strip() for s in para)
-
+        for i, chunk in enumerate(chunks):
             retries = 3
-            translated = full_text
             for attempt in range(retries):
                 try:
-                    translated = translator.translate(full_text)
+                    translated_parts.append(translator.translate(chunk))
                     break
                 except Exception:
                     if attempt < retries - 1:
-                        time.sleep(1 * (attempt + 1))
+                        time.sleep(1.5 * (attempt + 1))
+                    else:
+                        translated_parts.append(chunk)  # fallback
 
-            # Store translated paragraph text on the first segment of the group
-            # and mark the rest as part of the group
-            for i, seg in enumerate(para):
-                if i == 0:
-                    seg["text_translated"] = translated
-                    seg["_para_start"] = True
-                else:
-                    seg["text_translated"] = ""
-                    seg["_para_start"] = False
+            self._report("translate", 0.2 + 0.8 * ((i + 1) / len(chunks)),
+                         f"Translated chunk {i + 1}/{len(chunks)}")
 
-            para_idx += 1
-            self._report(
-                "translate",
-                para_idx / max(total_paras, 1),
-                f"Translated {para_idx}/{total_paras} paragraphs",
-            )
+        translated_text = " ".join(translated_parts)
+        return full_text, translated_text
 
-        # Mark empty segments
-        for seg in segments:
-            if "text_translated" not in seg:
-                seg["text_translated"] = ""
-                seg["_para_start"] = False
+    @staticmethod
+    def _split_text_for_translation(text: str, max_chars: int = 4500) -> List[str]:
+        """Split text into chunks at sentence boundaries for translation API limits."""
+        if len(text) <= max_chars:
+            return [text]
 
-        return segments
+        chunks = []
+        current = ""
+        # Split on sentence endings
+        sentences = re.split(r'(?<=[.!?।])\s+', text)
 
-    # ── Step 5a: TTS time-aligned ────────────────────────────────────────
-    def _tts_time_aligned(self, text_segments: List[Dict]) -> Path:
+        for sentence in sentences:
+            if len(current) + len(sentence) + 1 > max_chars and current:
+                chunks.append(current.strip())
+                current = sentence
+            else:
+                current = (current + " " + sentence).strip()
+
+        if current.strip():
+            chunks.append(current.strip())
+
+        return chunks if chunks else [text]
+
+    # ── Step 5: Continuous TTS ────────────────────────────────────────────
+    def _tts_continuous(self, translated_text: str) -> Path:
+        """Synthesize the entire translated narrative as one continuous audio."""
         import edge_tts
 
-        out_wav = self.cfg.work_dir / "tts_aligned.wav"
+        out_wav = self.cfg.work_dir / "tts_full.wav"
         voice = self.cfg.tts_voice
         rate = self.cfg.tts_rate
 
-        async def synthesize_paragraph(text: str, seg_out: Path):
+        # Edge-TTS can handle long text, but split at ~2000 chars for reliability
+        chunks = self._split_text_for_tts(translated_text, max_chars=2000)
+        total = len(chunks)
+
+        async def synthesize_chunk(text: str, out_path: Path):
             communicate = edge_tts.Communicate(text, voice, rate=rate)
-            await communicate.save(str(seg_out))
+            await communicate.save(str(out_path))
 
         async def run_all():
-            seg_data: List[tuple] = []
+            chunk_wavs: List[Path] = []
 
-            # Collect paragraphs (first segment of each group has the text)
-            para_segments = [s for s in text_segments
-                            if s.get("_para_start", True) and s.get("text_translated", "").strip()]
-            total = len(para_segments)
-
-            for i, seg in enumerate(para_segments):
-                text = seg["text_translated"].strip()
-                start_time = seg.get("start", 0.0)
-                seg_mp3 = self.cfg.work_dir / f"tts_para_{i:04d}.mp3"
-                seg_wav = self.cfg.work_dir / f"tts_para_{i:04d}.wav"
+            for i, chunk in enumerate(chunks):
+                chunk_mp3 = self.cfg.work_dir / f"tts_chunk_{i:04d}.mp3"
+                chunk_wav = self.cfg.work_dir / f"tts_chunk_{i:04d}.wav"
 
                 try:
-                    await synthesize_paragraph(text, seg_mp3)
+                    await synthesize_chunk(chunk, chunk_mp3)
                     subprocess.run(
                         [
-                            self._ffmpeg, "-y", "-i", str(seg_mp3),
+                            self._ffmpeg, "-y", "-i", str(chunk_mp3),
                             "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
-                            str(seg_wav),
+                            str(chunk_wav),
                         ],
-                        check=True,
-                        capture_output=True,
+                        check=True, capture_output=True,
                     )
-                    seg_data.append((start_time, seg_wav))
-                except Exception:
-                    pass  # skip failed paragraphs
-                finally:
-                    seg_mp3.unlink(missing_ok=True)
-
-                self._report("synthesize", (i + 1) / total, f"Synthesized {i + 1}/{total} paragraphs")
-
-            self._build_aligned_wav(seg_data, out_wav)
-
-            for _, wav_path in seg_data:
-                wav_path.unlink(missing_ok=True)
-
-        asyncio.run(run_all())
-        return out_wav
-
-    # ── Step 5b: TTS concatenated ────────────────────────────────────────
-    def _tts_concatenated(self, text_segments: List[Dict]) -> Path:
-        import edge_tts
-
-        out_wav = self.cfg.work_dir / "tts_concat.wav"
-        voice = self.cfg.tts_voice
-        rate = self.cfg.tts_rate
-
-        async def synthesize_paragraph(text: str, seg_out: Path):
-            communicate = edge_tts.Communicate(text, voice, rate=rate)
-            await communicate.save(str(seg_out))
-
-        async def run_all():
-            seg_wavs: List[Path] = []
-
-            para_segments = [s for s in text_segments
-                            if s.get("_para_start", True) and s.get("text_translated", "").strip()]
-            total = len(para_segments)
-
-            for i, seg in enumerate(para_segments):
-                text = seg["text_translated"].strip()
-                seg_mp3 = self.cfg.work_dir / f"tts_para_{i:04d}.mp3"
-                seg_wav = self.cfg.work_dir / f"tts_para_{i:04d}.wav"
-
-                try:
-                    await synthesize_paragraph(text, seg_mp3)
-                    subprocess.run(
-                        [
-                            self._ffmpeg, "-y", "-i", str(seg_mp3),
-                            "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
-                            str(seg_wav),
-                        ],
-                        check=True,
-                        capture_output=True,
-                    )
-                    seg_wavs.append(seg_wav)
+                    chunk_wavs.append(chunk_wav)
                 except Exception:
                     pass
                 finally:
-                    seg_mp3.unlink(missing_ok=True)
+                    chunk_mp3.unlink(missing_ok=True)
 
-                self._report("synthesize", (i + 1) / total, f"Synthesized {i + 1}/{total} paragraphs")
+                self._report("synthesize", (i + 1) / total,
+                             f"Synthesized {i + 1}/{total} chunks")
 
-            if seg_wavs:
+            # Concatenate all chunks into one continuous WAV
+            if chunk_wavs:
                 with wave.open(str(out_wav), "wb") as wf:
                     wf.setnchannels(self.N_CHANNELS)
                     wf.setsampwidth(2)
                     wf.setframerate(self.SAMPLE_RATE)
-                    for sw in seg_wavs:
-                        with wave.open(str(sw), "rb") as rf:
+                    for cw in chunk_wavs:
+                        with wave.open(str(cw), "rb") as rf:
                             wf.writeframes(rf.readframes(rf.getnframes()))
-                        sw.unlink(missing_ok=True)
+                        cw.unlink(missing_ok=True)
 
         asyncio.run(run_all())
         return out_wav
 
-    # ── WAV alignment ────────────────────────────────────────────────────
-    def _build_aligned_wav(self, seg_data: List[tuple], out_wav: Path):
-        if not seg_data:
-            return
+    @staticmethod
+    def _split_text_for_tts(text: str, max_chars: int = 2000) -> List[str]:
+        """Split text for TTS at sentence boundaries."""
+        if len(text) <= max_chars:
+            return [text]
 
-        max_end = 0.0
-        for start_time, wav_path in seg_data:
-            with wave.open(str(wav_path), "rb") as wf:
-                duration = wf.getnframes() / wf.getframerate()
-                max_end = max(max_end, start_time + duration)
+        chunks = []
+        current = ""
+        sentences = re.split(r'(?<=[.!?।,])\s+', text)
 
-        total_samples = int(max_end * self.SAMPLE_RATE) + self.SAMPLE_RATE
-        audio_buffer = [0] * (total_samples * self.N_CHANNELS)
+        for sentence in sentences:
+            if len(current) + len(sentence) + 1 > max_chars and current:
+                chunks.append(current.strip())
+                current = sentence
+            else:
+                current = (current + " " + sentence).strip()
 
-        for start_time, wav_path in seg_data:
-            start_sample = int(start_time * self.SAMPLE_RATE)
-            with wave.open(str(wav_path), "rb") as wf:
-                frames = wf.readframes(wf.getnframes())
-                samples = struct.unpack(f"<{len(frames) // 2}h", frames)
+        if current.strip():
+            chunks.append(current.strip())
 
-                for j, sample in enumerate(samples):
-                    idx = start_sample * self.N_CHANNELS + j
-                    if idx < len(audio_buffer):
-                        audio_buffer[idx] = max(-32768, min(32767, audio_buffer[idx] + sample))
-
-        with wave.open(str(out_wav), "wb") as wf:
-            wf.setnchannels(self.N_CHANNELS)
-            wf.setsampwidth(2)
-            wf.setframerate(self.SAMPLE_RATE)
-            wf.writeframes(struct.pack(f"<{len(audio_buffer)}h", *audio_buffer))
+        return chunks if chunks else [text]
 
     # ── Audio mixing ─────────────────────────────────────────────────────
     def _mix_audio(self, original: Path, tts: Path, original_vol: float) -> Path:
