@@ -327,8 +327,17 @@ class Pipeline:
         """Transcribe speech from audio using Whisper (picks up only spoken words)."""
         from faster_whisper import WhisperModel
 
-        self._report("transcribe", 0.1, f"Loading model ({self.cfg.asr_model})...")
-        model = WhisperModel(self.cfg.asr_model, device="cpu", compute_type="int8")
+        # Auto-detect GPU: use CUDA if available, else fall back to CPU
+        device, compute = "cpu", "int8"
+        try:
+            import torch
+            if torch.cuda.is_available():
+                device, compute = "cuda", "float16"
+        except ImportError:
+            pass
+
+        self._report("transcribe", 0.1, f"Loading model ({self.cfg.asr_model}) on {device.upper()}...")
+        model = WhisperModel(self.cfg.asr_model, device=device, compute_type=compute)
 
         self._report("transcribe", 0.2, "Transcribing audio with word timestamps...")
         seg_iter, info = model.transcribe(str(wav_path), vad_filter=True, word_timestamps=True)
