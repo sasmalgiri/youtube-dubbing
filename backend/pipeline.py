@@ -330,16 +330,23 @@ class Pipeline:
         self._report("transcribe", 0.1, f"Loading model ({self.cfg.asr_model})...")
         model = WhisperModel(self.cfg.asr_model, device="cpu", compute_type="int8")
 
-        self._report("transcribe", 0.2, "Transcribing audio...")
-        seg_iter, info = model.transcribe(str(wav_path), vad_filter=True)
+        self._report("transcribe", 0.2, "Transcribing audio with word timestamps...")
+        seg_iter, info = model.transcribe(str(wav_path), vad_filter=True, word_timestamps=True)
 
         segments: List[Dict] = []
         for seg in seg_iter:
-            segments.append({
+            entry = {
                 "start": float(seg.start),
                 "end": float(seg.end),
                 "text": seg.text.strip(),
-            })
+            }
+            # Word-level timestamps for fine-grained alignment
+            if hasattr(seg, "words") and seg.words:
+                entry["words"] = [
+                    {"word": w.word.strip(), "start": float(w.start), "end": float(w.end)}
+                    for w in seg.words
+                ]
+            segments.append(entry)
             self._report(
                 "transcribe",
                 min(0.2 + 0.8 * (len(segments) / max(len(segments) + 5, 1)), 0.95),
@@ -635,35 +642,68 @@ class Pipeline:
 
     # ── Step 5b: Time-aligned TTS ─────────────────────────────────────────
     def _tts_time_aligned(self, segments, total_duration, prefix="", progress_base=0.0, progress_span=1.0):
-        """Generate TTS per segment, adjust tempo to fit time slot, place at original timestamps.
+        """Two-pass TTS: generate → measure → adapt rate → regenerate → fine-stretch.
 
-        prefix: unique prefix for temp file names (e.g. "c01_" for chunk 1)
-        progress_base/span: for reporting progress within a larger job
+        Pass 1: Generate TTS at default rate for all segments
+        Pass 2: Re-generate segments that don't fit with an adapted speech rate
+        Pass 3: Fine-tune remaining mismatches with rubberband/atempo
         """
         import edge_tts
         voice = self.cfg.tts_voice
-        rate = self.cfg.tts_rate
+        base_rate = self.cfg.tts_rate
+        base_rate_val = self._parse_tts_rate(base_rate)
 
-        # Generate all TTS mp3 files in a single async event loop
-        async def generate_all():
+        # Pre-calculate available time slot for each segment
+        for i, seg in enumerate(segments):
+            seg_dur = seg["end"] - seg["start"]
+            if i < len(segments) - 1:
+                available = segments[i + 1]["start"] - seg["start"]
+            else:
+                available = (total_duration - seg["start"]) if total_duration > 0 else seg_dur
+            seg["_available"] = max(available, seg_dur)
+
+        # ── Pass 1: Generate all TTS at default rate ──
+        async def tts_pass(rate_overrides):
             for i, seg in enumerate(segments):
                 text = seg.get("text_translated", seg["text"]).strip()
                 if not text:
                     continue
+                seg_rate = rate_overrides.get(i, base_rate)
                 mp3 = self.cfg.work_dir / f"{prefix}seg_{i:04d}.mp3"
                 try:
-                    comm = edge_tts.Communicate(text, voice, rate=rate)
+                    comm = edge_tts.Communicate(text, voice, rate=seg_rate)
                     await comm.save(str(mp3))
                     seg["_tts_mp3"] = mp3
                 except Exception:
-                    pass  # skip failed segments
+                    pass
 
-        asyncio.run(generate_all())
+        asyncio.run(tts_pass({}))
 
-        # Convert to WAV and adjust tempo per segment to fit its time slot
+        # ── Measure durations, find segments that need rate adaptation ──
+        redo_rates = {}
+        for i, seg in enumerate(segments):
+            mp3 = seg.get("_tts_mp3")
+            if not mp3 or not mp3.exists():
+                continue
+            tts_dur = self._get_duration(mp3)
+            available = seg.get("_available", 0)
+            if available > 0 and tts_dur > 0:
+                ratio = tts_dur / available
+                if ratio > 1.15 or ratio < 0.70:
+                    # ratio > 1 → TTS too long → need faster rate (positive adjustment)
+                    adj = int((ratio - 1) * 100)
+                    new_val = max(-50, min(base_rate_val + adj, 100))
+                    redo_rates[i] = f"+{new_val}%" if new_val >= 0 else f"{new_val}%"
+
+        # ── Pass 2: Re-generate mismatched segments with adapted rate ──
+        if redo_rates:
+            asyncio.run(tts_pass(redo_rates))
+
+        # ── Convert to WAV and fine-tune remaining mismatches ──
         tts_data = []
         for i, seg in enumerate(segments):
             mp3 = seg.pop("_tts_mp3", None)
+            available = seg.pop("_available", 0)
             if not mp3 or not mp3.exists():
                 continue
 
@@ -676,36 +716,16 @@ class Pipeline:
             )
             mp3.unlink(missing_ok=True)
 
-            # Available time = gap from this segment's start to the next segment's start
-            seg_duration = seg["end"] - seg["start"]
-            if i < len(segments) - 1:
-                available = segments[i + 1]["start"] - seg["start"]
-            else:
-                available = (total_duration - seg["start"]) if total_duration > 0 else seg_duration
-            available = max(available, seg_duration)  # at least the segment's own duration
-
             tts_dur = self._get_duration(wav)
 
-            # Speed up TTS if it doesn't fit the time slot (up to 1.8x for segments)
-            if tts_dur > 0 and available > 0 and tts_dur > available * 1.05:
+            # Pass 3: Fine-tune with rubberband/atempo for remaining mismatch
+            if tts_dur > 0 and available > 0:
                 ratio = tts_dur / available
-                ratio = min(ratio, 1.8)  # cap at 1.8x per segment
                 if ratio > 1.05:
-                    adjusted = self.cfg.work_dir / f"{prefix}seg_{i:04d}_adj.wav"
-                    tempo = ratio
-                    filters = []
-                    while tempo > 2.0:
-                        filters.append("atempo=2.0")
-                        tempo /= 2.0
-                    filters.append(f"atempo={tempo:.4f}")
-                    subprocess.run(
-                        [self._ffmpeg, "-y", "-i", str(wav),
-                         "-filter:a", ",".join(filters),
-                         "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
-                         str(adjusted)],
-                        check=True, capture_output=True,
-                    )
-                    wav = adjusted
+                    ratio = min(ratio, 1.8)
+                    wav = self._time_stretch(
+                        wav, ratio,
+                        self.cfg.work_dir / f"{prefix}seg_{i:04d}_adj.wav")
                     tts_dur = self._get_duration(wav)
 
             tts_data.append({
@@ -741,6 +761,42 @@ class Pipeline:
             w.writeframes(bytes(timeline))
 
         return output
+
+    @staticmethod
+    def _parse_tts_rate(rate_str: str) -> int:
+        """Parse edge-tts rate string like '-5%' or '+20%' to integer."""
+        return int(rate_str.replace("%", "").replace("+", ""))
+
+    def _time_stretch(self, wav_path: Path, ratio: float, output_path: Path) -> Path:
+        """Time-stretch audio (ratio > 1 = speed up). Tries rubberband then atempo."""
+        # Try ffmpeg rubberband filter first (better pitch preservation)
+        try:
+            subprocess.run(
+                [self._ffmpeg, "-y", "-i", str(wav_path),
+                 "-filter:a", f"rubberband=tempo={ratio:.4f}",
+                 "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
+                 str(output_path)],
+                check=True, capture_output=True,
+            )
+            return output_path
+        except subprocess.CalledProcessError:
+            pass  # rubberband not available, fall back to atempo
+
+        # Fallback: atempo filter (chain for ratios > 2.0)
+        tempo = ratio
+        filters = []
+        while tempo > 2.0:
+            filters.append("atempo=2.0")
+            tempo /= 2.0
+        filters.append(f"atempo={tempo:.4f}")
+        subprocess.run(
+            [self._ffmpeg, "-y", "-i", str(wav_path),
+             "-filter:a", ",".join(filters),
+             "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
+             str(output_path)],
+            check=True, capture_output=True,
+        )
+        return output_path
 
     # ── Duration & tempo adjustment ───────────────────────────────────────
     def _get_duration(self, media_path: Path) -> float:
