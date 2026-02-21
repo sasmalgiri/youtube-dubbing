@@ -9,6 +9,7 @@ Refactored from pipeline_v2 with:
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import re
 import shutil
@@ -148,26 +149,85 @@ class Pipeline:
         srt_hi = self.cfg.work_dir / "transcript_hi.srt"
         write_srt(self.segments, srt_hi, text_key="text_translated")
 
-        # Step 5: Synthesize TTS aligned to original video timestamps
-        # Each segment's dubbed audio plays at the SAME time as the original scene
+        # Step 5+6: Process video in 1-minute chunks for tight scene sync
         video_duration = self._get_duration(video_path)
-        self._report("synthesize", 0.0, f"Synthesizing aligned Hindi audio ({self.cfg.tts_voice})...")
-        tts_wav = self._tts_time_aligned(text_segments, video_duration)
+        chunk_secs = 60.0
+        num_chunks = max(1, math.ceil(video_duration / chunk_secs))
 
-        if not tts_wav.exists():
-            raise RuntimeError("TTS synthesis failed - no output file")
-        self._report("synthesize", 1.0, "Audio synthesized and aligned")
+        self._report("synthesize", 0.0,
+                     f"Processing {num_chunks} minute chunks ({self.cfg.tts_voice})...")
 
-        # Step 6: Assemble (video stays at 1x speed, audio is already synced)
-        self._report("assemble", 0.0, "Assembling final video...")
+        chunk_outputs = []
+        for cidx in range(num_chunks):
+            chunk_start = cidx * chunk_secs
+            chunk_end = min((cidx + 1) * chunk_secs, video_duration)
+            chunk_len = chunk_end - chunk_start
+            prefix = f"c{cidx:02d}_"
 
-        final_audio = tts_wav
-        if self.cfg.mix_original:
-            self._report("assemble", 0.3, f"Mixing original audio ({self.cfg.original_volume:.0%})...")
-            final_audio = self._mix_audio(audio_raw, tts_wav, self.cfg.original_volume)
+            pct = cidx / num_chunks
+            self._report("synthesize", pct * 0.9,
+                         f"Chunk {cidx + 1}/{num_chunks}: splitting video...")
 
+            # 5a. Split video into this minute chunk
+            chunk_vid = self.cfg.work_dir / f"{prefix}video.mp4"
+            self._split_video(video_path, chunk_start, chunk_len, chunk_vid)
+
+            # 5b. Get segments that belong to this chunk, adjust to chunk-relative time
+            chunk_segs = []
+            for seg in text_segments:
+                if seg["start"] >= chunk_start and seg["start"] < chunk_end:
+                    chunk_segs.append({
+                        "start": seg["start"] - chunk_start,
+                        "end": min(seg["end"], chunk_end) - chunk_start,
+                        "text": seg.get("text", ""),
+                        "text_translated": seg.get("text_translated", seg.get("text", "")),
+                    })
+
+            if not chunk_segs:
+                # No speech in this chunk — use silent audio
+                silent_wav = self.cfg.work_dir / f"{prefix}silent.wav"
+                subprocess.run(
+                    [self._ffmpeg, "-y", "-f", "lavfi", "-i",
+                     f"anullsrc=r={self.SAMPLE_RATE}:cl=stereo",
+                     "-t", f"{chunk_len:.3f}",
+                     "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
+                     str(silent_wav)],
+                    check=True, capture_output=True,
+                )
+                chunk_audio = silent_wav
+            else:
+                # 5c. TTS + align within this chunk
+                self._report("synthesize", pct * 0.9 + 0.02,
+                             f"Chunk {cidx + 1}/{num_chunks}: synthesizing {len(chunk_segs)} segments...")
+                chunk_audio = self._tts_time_aligned(chunk_segs, chunk_len, prefix=prefix)
+
+            # 5d. Mix original audio if requested
+            if self.cfg.mix_original:
+                chunk_orig = self.cfg.work_dir / f"{prefix}orig.wav"
+                subprocess.run(
+                    [self._ffmpeg, "-y", "-ss", f"{chunk_start:.3f}",
+                     "-i", str(audio_raw), "-t", f"{chunk_len:.3f}",
+                     "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
+                     str(chunk_orig)],
+                    check=True, capture_output=True,
+                )
+                chunk_audio = self._mix_audio(chunk_orig, chunk_audio, self.cfg.original_volume)
+
+            # 5e. Mux this chunk
+            chunk_out = self.cfg.work_dir / f"{prefix}dubbed.mp4"
+            self._mux_replace_audio(chunk_vid, chunk_audio, chunk_out)
+            chunk_outputs.append(chunk_out)
+
+        self._report("synthesize", 1.0, "All chunks synthesized")
+
+        # Step 6: Concatenate all dubbed chunks into final video
+        self._report("assemble", 0.0, f"Assembling {num_chunks} chunks into final video...")
         self.cfg.output_path.parent.mkdir(parents=True, exist_ok=True)
-        self._mux_replace_audio(video_path, final_audio, self.cfg.output_path)
+
+        if len(chunk_outputs) == 1:
+            shutil.copy2(chunk_outputs[0], self.cfg.output_path)
+        else:
+            self._concatenate_videos(chunk_outputs, self.cfg.output_path)
 
         # Copy SRT to output
         out_srt = self.cfg.output_path.parent / "subtitles_hi.srt"
@@ -574,8 +634,12 @@ class Pipeline:
         return out_wav
 
     # ── Step 5b: Time-aligned TTS ─────────────────────────────────────────
-    def _tts_time_aligned(self, segments, total_duration):
-        """Generate TTS per segment, adjust tempo to fit time slot, place at original timestamps."""
+    def _tts_time_aligned(self, segments, total_duration, prefix="", progress_base=0.0, progress_span=1.0):
+        """Generate TTS per segment, adjust tempo to fit time slot, place at original timestamps.
+
+        prefix: unique prefix for temp file names (e.g. "c01_" for chunk 1)
+        progress_base/span: for reporting progress within a larger job
+        """
         import edge_tts
         voice = self.cfg.tts_voice
         rate = self.cfg.tts_rate
@@ -586,15 +650,13 @@ class Pipeline:
                 text = seg.get("text_translated", seg["text"]).strip()
                 if not text:
                     continue
-                mp3 = self.cfg.work_dir / f"seg_{i:04d}.mp3"
+                mp3 = self.cfg.work_dir / f"{prefix}seg_{i:04d}.mp3"
                 try:
                     comm = edge_tts.Communicate(text, voice, rate=rate)
                     await comm.save(str(mp3))
                     seg["_tts_mp3"] = mp3
                 except Exception:
                     pass  # skip failed segments
-                self._report("synthesize", 0.05 + 0.55 * ((i + 1) / len(segments)),
-                             f"Generating speech {i + 1}/{len(segments)}...")
 
         asyncio.run(generate_all())
 
@@ -605,7 +667,7 @@ class Pipeline:
             if not mp3 or not mp3.exists():
                 continue
 
-            wav = self.cfg.work_dir / f"seg_{i:04d}.wav"
+            wav = self.cfg.work_dir / f"{prefix}seg_{i:04d}.wav"
             subprocess.run(
                 [self._ffmpeg, "-y", "-i", str(mp3),
                  "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
@@ -629,7 +691,7 @@ class Pipeline:
                 ratio = tts_dur / available
                 ratio = min(ratio, 1.8)  # cap at 1.8x per segment
                 if ratio > 1.05:
-                    adjusted = self.cfg.work_dir / f"seg_{i:04d}_adj.wav"
+                    adjusted = self.cfg.work_dir / f"{prefix}seg_{i:04d}_adj.wav"
                     tempo = ratio
                     filters = []
                     while tempo > 2.0:
@@ -652,13 +714,9 @@ class Pipeline:
                 "duration": tts_dur,
             })
 
-            self._report("synthesize", 0.6 + 0.3 * ((i + 1) / len(segments)),
-                         f"Aligned {i + 1}/{len(segments)} segments...")
+        return self._build_timeline(tts_data, total_duration, prefix)
 
-        self._report("synthesize", 0.95, "Building aligned audio track...")
-        return self._build_timeline(tts_data, total_duration)
-
-    def _build_timeline(self, tts_data, total_duration):
+    def _build_timeline(self, tts_data, total_duration, prefix=""):
         """Place TTS segments at their original timestamps on a silent audio track."""
         total_samples = int((total_duration + 0.5) * self.SAMPLE_RATE)
         bytes_per_frame = 2 * self.N_CHANNELS  # 16-bit stereo = 4 bytes
@@ -675,7 +733,7 @@ class Pipeline:
             if copy_len > 0:
                 timeline[start_byte:end_byte] = raw[:copy_len]
 
-        output = self.cfg.work_dir / "tts_aligned.wav"
+        output = self.cfg.work_dir / f"{prefix}tts_aligned.wav"
         with wave.open(str(output), 'wb') as w:
             w.setnchannels(self.N_CHANNELS)
             w.setsampwidth(2)
@@ -786,6 +844,33 @@ class Pipeline:
             capture_output=True,
         )
         return mixed
+
+    # ── Video split / concat ─────────────────────────────────────────────
+    def _split_video(self, video_path: Path, start: float, duration: float, output_path: Path):
+        """Extract a clip from the video using stream copy (fast, no re-encode)."""
+        subprocess.run(
+            [self._ffmpeg, "-y",
+             "-ss", f"{start:.3f}", "-i", str(video_path),
+             "-t", f"{duration:.3f}",
+             "-c", "copy", "-an",  # copy video only, drop audio
+             str(output_path)],
+            check=True, capture_output=True,
+        )
+
+    def _concatenate_videos(self, video_paths: List[Path], output_path: Path):
+        """Concatenate multiple video files using ffmpeg concat demuxer."""
+        concat_list = self.cfg.work_dir / "concat_list.txt"
+        with open(concat_list, "w", encoding="utf-8") as f:
+            for vp in video_paths:
+                # ffmpeg concat needs forward slashes even on Windows
+                safe_path = str(vp).replace("\\", "/")
+                f.write(f"file '{safe_path}'\n")
+        subprocess.run(
+            [self._ffmpeg, "-y", "-f", "concat", "-safe", "0",
+             "-i", str(concat_list), "-c", "copy",
+             str(output_path)],
+            check=True, capture_output=True,
+        )
 
     # ── Video muxing ─────────────────────────────────────────────────────
     def _mux_replace_audio(self, video_path: Path, audio_path: Path, output_path: Path):
