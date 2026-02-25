@@ -5,18 +5,23 @@ import { useVoices } from '@/hooks/useVoices';
 interface VoiceSelectorProps {
     value: string;
     onChange: (voice: string) => void;
+    language?: string;
 }
 
-export default function VoiceSelector({ value, onChange }: VoiceSelectorProps) {
-    const { voices, loading } = useVoices('hi');
+export default function VoiceSelector({ value, onChange, language = 'hi' }: VoiceSelectorProps) {
+    const { voices, loading } = useVoices(language);
 
     return (
         <div>
-            <label className="label mb-2 block">Hindi Voice</label>
+            <label className="label mb-2 block">Voice</label>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {loading ? (
                     <div className="col-span-2 text-sm text-text-muted py-3 text-center">
                         Loading voices...
+                    </div>
+                ) : voices.length === 0 ? (
+                    <div className="col-span-2 text-sm text-text-muted py-3 text-center">
+                        No voices available for this language
                     </div>
                 ) : (
                     voices.map((voice) => {

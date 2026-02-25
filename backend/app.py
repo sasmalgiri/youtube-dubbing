@@ -33,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from pipeline import Pipeline, PipelineConfig, list_voices
+from pipeline import Pipeline, PipelineConfig, list_voices, DEFAULT_VOICES
 
 # ── Types ────────────────────────────────────────────────────────────────────
 
@@ -52,6 +52,7 @@ class Job:
     result_path: Optional[Path] = None
     source_url: str = ""
     video_title: str = ""
+    target_language: str = "hi"
     segments: List[Dict] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     events: List[Dict] = field(default_factory=list)
@@ -59,8 +60,10 @@ class Job:
 
 class JobCreateRequest(BaseModel):
     url: str
+    source_language: str = "auto"
+    target_language: str = "hi"
     voice: str = "hi-IN-SwaraNeural"
-    tts_rate: str = "-5%"
+    tts_rate: str = "+0%"
     mix_original: bool = False
     original_volume: float = 0.10
 
@@ -144,12 +147,18 @@ def _run_job(job: Job, req: JobCreateRequest):
 
         out_path = job_dir / "dubbed.mp4"
 
+        # Use the requested voice, or pick default for target language
+        voice = req.voice
+        if not voice or voice == "hi-IN-SwaraNeural":
+            voice = DEFAULT_VOICES.get(req.target_language, req.voice)
+
         cfg = PipelineConfig(
             source=req.url,
             work_dir=work_dir,
             output_path=out_path,
-            target_language="hi",
-            tts_voice=req.voice,
+            source_language=req.source_language,
+            target_language=req.target_language,
+            tts_voice=voice,
             tts_rate=req.tts_rate,
             mix_original=req.mix_original,
             original_volume=req.original_volume,
@@ -217,7 +226,7 @@ def create_job(req: JobCreateRequest):
         raise HTTPException(status_code=400, detail="URL is required")
 
     job_id = uuid.uuid4().hex[:12]
-    job = Job(id=job_id, source_url=url)
+    job = Job(id=job_id, source_url=url, target_language=req.target_language)
     JOBS[job_id] = job
 
     t = threading.Thread(target=_run_job, args=(job, req), daemon=True)
@@ -299,7 +308,7 @@ def get_srt(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    srt_path = OUTPUTS / job_id / "subtitles_hi.srt"
+    srt_path = OUTPUTS / job_id / f"subtitles_{job.target_language}.srt"
     if not srt_path.exists():
         raise HTTPException(status_code=404, detail="Subtitles not found")
 

@@ -11,6 +11,8 @@ export interface Voice {
 
 export interface JobCreateRequest {
     url: string;
+    source_language?: string;
+    target_language?: string;
     voice?: string;
     tts_rate?: string;
     mix_original?: boolean;
