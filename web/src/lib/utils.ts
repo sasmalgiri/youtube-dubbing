@@ -37,3 +37,16 @@ export function isValidYouTubeUrl(url: string): boolean {
 export function getThumbnailUrl(videoId: string): string {
     return `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
 }
+
+export const LANGUAGE_NAMES: Record<string, string> = {
+    hi: 'Hindi', bn: 'Bengali', ta: 'Tamil', te: 'Telugu',
+    mr: 'Marathi', gu: 'Gujarati', kn: 'Kannada', ml: 'Malayalam',
+    pa: 'Punjabi', ur: 'Urdu', en: 'English', es: 'Spanish',
+    fr: 'French', de: 'German', ja: 'Japanese', ko: 'Korean',
+    zh: 'Chinese', pt: 'Portuguese', ru: 'Russian', ar: 'Arabic',
+    it: 'Italian', tr: 'Turkish',
+};
+
+export function getLanguageName(code: string): string {
+    return LANGUAGE_NAMES[code] || code.toUpperCase();
+}

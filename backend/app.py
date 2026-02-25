@@ -218,6 +218,7 @@ def list_jobs():
             "error": j.error,
             "source_url": j.source_url,
             "video_title": j.video_title,
+            "target_language": j.target_language,
             "created_at": j.created_at,
         }
         for j in jobs
@@ -306,6 +307,7 @@ def get_job(job_id: str):
         "error": job.error,
         "source_url": job.source_url,
         "video_title": job.video_title,
+        "target_language": job.target_language,
         "created_at": job.created_at,
     }
 

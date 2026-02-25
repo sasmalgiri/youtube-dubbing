@@ -106,10 +106,11 @@ export default function JobPage() {
                         <VideoPlayer
                             originalUrl={originalVideoUrl(jobId)}
                             dubbedUrl={resultVideoUrl(jobId)}
+                            targetLanguage={status?.target_language}
                         />
 
                         {/* Transcript */}
-                        <TranscriptViewer jobId={jobId} />
+                        <TranscriptViewer jobId={jobId} targetLanguage={status?.target_language} />
                     </div>
                 )}
 

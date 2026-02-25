@@ -1,15 +1,17 @@
 'use client';
 
 import { useState } from 'react';
-import { cn } from '@/lib/utils';
+import { cn, getLanguageName } from '@/lib/utils';
 
 interface VideoPlayerProps {
     originalUrl: string;
     dubbedUrl: string;
+    targetLanguage?: string;
 }
 
-export default function VideoPlayer({ originalUrl, dubbedUrl }: VideoPlayerProps) {
+export default function VideoPlayer({ originalUrl, dubbedUrl, targetLanguage = 'hi' }: VideoPlayerProps) {
     const [tab, setTab] = useState<'dubbed' | 'original'>('dubbed');
+    const langName = getLanguageName(targetLanguage);
 
     return (
         <div className="glass-card overflow-hidden">
@@ -22,7 +24,7 @@ export default function VideoPlayer({ originalUrl, dubbedUrl }: VideoPlayerProps
                         tab === 'dubbed' ? 'text-primary-light' : 'text-text-muted hover:text-text-secondary',
                     )}
                 >
-                    Dubbed (Hindi)
+                    Dubbed ({langName})
                     {tab === 'dubbed' && (
                         <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
                     )}

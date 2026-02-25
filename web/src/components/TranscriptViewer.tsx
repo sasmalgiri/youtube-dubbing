@@ -2,13 +2,14 @@
 
 import { useEffect, useState } from 'react';
 import { getTranscript, resultSrtUrl, type TranscriptSegment } from '@/lib/api';
-import { formatTime } from '@/lib/utils';
+import { formatTime, getLanguageName } from '@/lib/utils';
 
 interface TranscriptViewerProps {
     jobId: string;
+    targetLanguage?: string;
 }
 
-export default function TranscriptViewer({ jobId }: TranscriptViewerProps) {
+export default function TranscriptViewer({ jobId, targetLanguage = 'hi' }: TranscriptViewerProps) {
     const [segments, setSegments] = useState<TranscriptSegment[]>([]);
     const [loading, setLoading] = useState(true);
 
@@ -59,8 +60,8 @@ export default function TranscriptViewer({ jobId }: TranscriptViewerProps) {
             {/* Column headers */}
             <div className="grid grid-cols-[60px_1fr_1fr] gap-4 px-5 py-2 border-b border-border bg-white/[0.02]">
                 <span className="text-[10px] font-medium text-text-muted uppercase">Time</span>
-                <span className="text-[10px] font-medium text-text-muted uppercase">Original (English)</span>
-                <span className="text-[10px] font-medium text-text-muted uppercase">Translated (Hindi)</span>
+                <span className="text-[10px] font-medium text-text-muted uppercase">Original</span>
+                <span className="text-[10px] font-medium text-text-muted uppercase">Translated ({getLanguageName(targetLanguage)})</span>
             </div>
 
             {/* Segments */}

@@ -810,24 +810,39 @@ class Pipeline:
         return output
 
     # ── Natural TTS + Video sync ────────────────────────────────────────
+    # Languages that Chatterbox TTS can pronounce well (English only for now)
+    CHATTERBOX_SUPPORTED_LANGS = {"en"}
+
     def _generate_tts_natural(self, segments):
-        """Generate TTS at natural speed. Uses first enabled engine in priority order."""
+        """Generate TTS at natural speed. Uses first enabled engine in priority order.
+
+        Chatterbox is English-only — for other languages it auto-falls back to
+        ElevenLabs (multilingual) or Edge-TTS (which has native voices for 70+ languages).
+        """
+        target = self.cfg.target_language
+
         if self.cfg.use_chatterbox:
-            self._report("synthesize", 0.05, "Using Chatterbox TTS (GPU, human-like voice)...")
-            return self._tts_chatterbox(segments)
+            if target in self.CHATTERBOX_SUPPORTED_LANGS:
+                self._report("synthesize", 0.05, "Using Chatterbox TTS (GPU, human-like voice)...")
+                return self._tts_chatterbox(segments)
+            else:
+                target_name = LANGUAGE_NAMES.get(target, target)
+                self._report("synthesize", 0.05,
+                             f"Chatterbox is English-only — switching to Edge-TTS for {target_name}...")
 
         if self.cfg.use_elevenlabs:
             elevenlabs_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
             if elevenlabs_key:
                 self._report("synthesize", 0.05, "Using ElevenLabs for human-like voice...")
                 return self._tts_elevenlabs(segments, elevenlabs_key)
-            raise RuntimeError("ElevenLabs enabled but ELEVENLABS_API_KEY not set in .env")
+            if not self.cfg.use_chatterbox:
+                raise RuntimeError("ElevenLabs enabled but ELEVENLABS_API_KEY not set in .env")
 
-        if self.cfg.use_edge_tts:
-            self._report("synthesize", 0.05, "Using Edge-TTS (free, no GPU)...")
-            return self._tts_edge(segments)
-
-        raise RuntimeError("No TTS engine enabled! Turn on at least one in settings.")
+        # Fall through to Edge-TTS (supports 70+ languages with native voices)
+        voice = self.cfg.tts_voice
+        target_name = LANGUAGE_NAMES.get(target, target)
+        self._report("synthesize", 0.05, f"Using Edge-TTS ({voice}) for {target_name}...")
+        return self._tts_edge(segments)
 
     def _tts_chatterbox(self, segments):
         """Generate TTS using Chatterbox — free, local, human-like AI voice."""

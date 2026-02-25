@@ -39,6 +39,7 @@ export interface JobStatus {
     error?: string | null;
     source_url: string;
     video_title: string;
+    target_language: string;
     created_at: number;
 }
 
