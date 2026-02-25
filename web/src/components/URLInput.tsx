@@ -3,23 +3,30 @@
 import { useState, useCallback, useRef } from 'react';
 import { extractYouTubeId, isValidYouTubeUrl, getThumbnailUrl } from '@/lib/utils';
 
-type InputMode = 'url' | 'upload';
+type InputMode = 'url' | 'upload' | 'batch';
 
 interface URLInputProps {
     onSubmit: (url: string) => void;
     onFileSubmit: (file: File) => void;
+    onBatchSubmit?: (urls: string[]) => void;
     disabled?: boolean;
 }
 
-export default function URLInput({ onSubmit, onFileSubmit, disabled }: URLInputProps) {
+export default function URLInput({ onSubmit, onFileSubmit, onBatchSubmit, disabled }: URLInputProps) {
     const [mode, setMode] = useState<InputMode>('url');
     const [url, setUrl] = useState('');
     const [file, setFile] = useState<File | null>(null);
     const [dragOver, setDragOver] = useState(false);
+    const [batchText, setBatchText] = useState('');
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const videoId = extractYouTubeId(url);
     const isValid = isValidYouTubeUrl(url);
+
+    // Batch URL parsing
+    const parsedLines = batchText.split('\n').map(l => l.trim()).filter(Boolean);
+    const validUrls = parsedLines.filter(isValidYouTubeUrl);
+    const invalidCount = parsedLines.length - validUrls.length;
 
     const handleUrlSubmit = useCallback(() => {
         if (isValid && !disabled) {
@@ -94,6 +101,21 @@ export default function URLInput({ onSubmit, onFileSubmit, disabled }: URLInputP
                     </svg>
                     Upload Video
                 </button>
+                <button
+                    onClick={() => setMode('batch')}
+                    className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 ${
+                        mode === 'batch'
+                            ? 'bg-primary text-white shadow-sm'
+                            : 'text-text-secondary hover:text-text-primary'
+                    }`}
+                >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M16 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8Z" />
+                        <path d="M15 3v4a2 2 0 0 0 2 2h4" />
+                        <path d="M10 13l-2 2 2 2" /><path d="M14 17l2-2-2-2" />
+                    </svg>
+                    Batch URLs
+                </button>
             </div>
 
             {/* YouTube URL Mode */}
@@ -164,6 +186,80 @@ export default function URLInput({ onSubmit, onFileSubmit, disabled }: URLInputP
                                     <path d="m13 8 6 4-6 4V8Z" />
                                 </svg>
                                 Start Dubbing
+                            </>
+                        )}
+                    </button>
+                </>
+            )}
+
+            {/* Batch Mode */}
+            {mode === 'batch' && (
+                <>
+                    <textarea
+                        value={batchText}
+                        onChange={(e) => setBatchText(e.target.value)}
+                        placeholder={"Paste YouTube URLs here (one per line)...\n\nhttps://youtube.com/watch?v=abc123\nhttps://youtu.be/def456\nhttps://youtube.com/watch?v=ghi789"}
+                        className="input-field w-full h-40 p-4 text-sm resize-none"
+                        disabled={disabled}
+                    />
+
+                    {/* URL count info */}
+                    {parsedLines.length > 0 && (
+                        <div className="flex items-center gap-3 text-sm">
+                            <span className="text-green-400 font-medium">
+                                {validUrls.length} valid URL{validUrls.length !== 1 ? 's' : ''}
+                            </span>
+                            {invalidCount > 0 && (
+                                <span className="text-error">
+                                    {invalidCount} invalid
+                                </span>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Thumbnail previews (first 3) */}
+                    {validUrls.length > 0 && (
+                        <div className="flex gap-2 overflow-hidden">
+                            {validUrls.slice(0, 3).map((u) => {
+                                const vid = extractYouTubeId(u);
+                                return vid ? (
+                                    <div key={vid} className="animate-slide-up glass-card p-2 flex items-center gap-3 flex-1 min-w-0">
+                                        <img
+                                            src={getThumbnailUrl(vid)}
+                                            alt="Thumbnail"
+                                            className="w-20 h-12 object-cover rounded-md"
+                                        />
+                                        <p className="text-xs text-text-muted truncate flex-1">{u}</p>
+                                    </div>
+                                ) : null;
+                            })}
+                            {validUrls.length > 3 && (
+                                <div className="glass-card p-2 flex items-center justify-center min-w-[80px]">
+                                    <span className="text-sm text-text-secondary">+{validUrls.length - 3} more</span>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    <button
+                        onClick={() => onBatchSubmit?.(validUrls)}
+                        disabled={validUrls.length === 0 || disabled}
+                        className="btn-primary w-full py-4 text-base font-semibold flex items-center justify-center gap-2"
+                    >
+                        {disabled ? (
+                            <>
+                                <svg className="animate-spin" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                                </svg>
+                                Processing...
+                            </>
+                        ) : (
+                            <>
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="m5 8 6 4-6 4V8Z" />
+                                    <path d="m13 8 6 4-6 4V8Z" />
+                                </svg>
+                                Start Batch Dubbing ({validUrls.length} video{validUrls.length !== 1 ? 's' : ''})
                             </>
                         )}
                     </button>

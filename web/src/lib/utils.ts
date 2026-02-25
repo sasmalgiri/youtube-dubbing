@@ -50,3 +50,10 @@ export const LANGUAGE_NAMES: Record<string, string> = {
 export function getLanguageName(code: string): string {
     return LANGUAGE_NAMES[code] || code.toUpperCase();
 }
+
+export function sanitizeFilename(name: string): string {
+    return name
+        .replace(/[<>:"/\\|?*]/g, '')
+        .replace(/\s+/g, '_')
+        .slice(0, 100);
+}

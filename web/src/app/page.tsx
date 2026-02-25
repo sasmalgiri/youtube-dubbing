@@ -74,6 +74,18 @@ export default function HomePage() {
         }
     }, [sourceLanguage, targetLanguage, settings, router]);
 
+    const handleBatchSubmit = useCallback((urls: string[]) => {
+        sessionStorage.setItem('batch_pending', JSON.stringify({
+            urls,
+            settings: {
+                source_language: sourceLanguage,
+                target_language: targetLanguage,
+                ...settings,
+            },
+        }));
+        router.push('/batch');
+    }, [sourceLanguage, targetLanguage, settings, router]);
+
     return (
         <div className="min-h-screen">
             {/* Hero Section */}
@@ -90,7 +102,7 @@ export default function HomePage() {
                     </div>
 
                     {/* URL Input */}
-                    <URLInput onSubmit={handleSubmit} onFileSubmit={handleFileSubmit} disabled={submitting} />
+                    <URLInput onSubmit={handleSubmit} onFileSubmit={handleFileSubmit} onBatchSubmit={handleBatchSubmit} disabled={submitting} />
 
                     {error && (
                         <div className="mt-4 p-3 rounded-xl bg-error/10 border border-error/20 text-error text-sm">
