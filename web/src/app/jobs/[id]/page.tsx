@@ -1,16 +1,31 @@
 'use client';
 
-import { useParams } from 'next/navigation';
+import { useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useJobProgress } from '@/hooks/useJobProgress';
 import ProgressPipeline from '@/components/ProgressPipeline';
 import VideoPlayer from '@/components/VideoPlayer';
 import TranscriptViewer from '@/components/TranscriptViewer';
-import { resultVideoUrl, originalVideoUrl, resultSrtUrl } from '@/lib/api';
+import { resultVideoUrl, originalVideoUrl, resultSrtUrl, deleteJob } from '@/lib/api';
 
 export default function JobPage() {
     const params = useParams();
+    const router = useRouter();
     const jobId = params.id as string;
+    const [cancelling, setCancelling] = useState(false);
+
+    const handleCancel = async () => {
+        if (!confirm('Cancel this dubbing job?')) return;
+        setCancelling(true);
+        try {
+            await deleteJob(jobId);
+            router.push('/');
+        } catch {
+            setCancelling(false);
+        }
+    };
+
     const {
         status,
         step,
@@ -42,32 +57,50 @@ export default function JobPage() {
                         {status?.video_title || 'Dubbing Job'}
                     </h1>
                 </div>
-                {isComplete && (
-                    <div className="flex items-center gap-3">
-                        <a
-                            href={resultSrtUrl(jobId)}
-                            download
-                            className="btn-secondary text-sm flex items-center gap-2"
+                <div className="flex items-center gap-3">
+                    {/* Cancel button - shown while running or on error */}
+                    {(!isComplete || isError) && (
+                        <button
+                            onClick={handleCancel}
+                            disabled={cancelling}
+                            className="text-sm px-4 py-2 rounded-lg border border-error/30 text-error hover:bg-error/10 transition-colors flex items-center gap-2 disabled:opacity-50"
                         >
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M17 6.1H3" /><path d="M21 12.1H3" /><path d="M15.1 18H3" />
+                                <circle cx="12" cy="12" r="10" />
+                                <path d="m15 9-6 6" />
+                                <path d="m9 9 6 6" />
                             </svg>
-                            Subtitles
-                        </a>
-                        <a
-                            href={resultVideoUrl(jobId)}
-                            download
-                            className="btn-primary text-sm flex items-center gap-2"
-                        >
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                <polyline points="7 10 12 15 17 10" />
-                                <line x1="12" x2="12" y1="15" y2="3" />
-                            </svg>
-                            Download Video
-                        </a>
-                    </div>
-                )}
+                            {cancelling ? 'Cancelling...' : 'Cancel'}
+                        </button>
+                    )}
+                    {/* Download buttons - shown when complete */}
+                    {isComplete && (
+                        <>
+                            <a
+                                href={resultSrtUrl(jobId)}
+                                download
+                                className="btn-secondary text-sm flex items-center gap-2"
+                            >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M17 6.1H3" /><path d="M21 12.1H3" /><path d="M15.1 18H3" />
+                                </svg>
+                                Subtitles
+                            </a>
+                            <a
+                                href={resultVideoUrl(jobId)}
+                                download
+                                className="btn-primary text-sm flex items-center gap-2"
+                            >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                    <polyline points="7 10 12 15 17 10" />
+                                    <line x1="12" x2="12" y1="15" y2="3" />
+                                </svg>
+                                Download Video
+                            </a>
+                        </>
+                    )}
+                </div>
             </div>
 
             {/* Content */}

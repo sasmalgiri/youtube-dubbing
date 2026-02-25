@@ -903,8 +903,15 @@ class Pipeline:
 
         if self.cfg.use_chatterbox:
             if target in self.CHATTERBOX_SUPPORTED_LANGS:
-                self._report("synthesize", 0.05, "Using Chatterbox TTS (GPU, human-like voice)...")
-                return self._tts_chatterbox(segments)
+                try:
+                    import torch
+                    if not torch.cuda.is_available():
+                        raise RuntimeError("No CUDA GPU available")
+                    self._report("synthesize", 0.05, "Using Chatterbox TTS (GPU, human-like voice)...")
+                    return self._tts_chatterbox(segments)
+                except Exception as e:
+                    self._report("synthesize", 0.05,
+                                 f"Chatterbox failed ({e}) — falling back to Edge-TTS...")
             else:
                 target_name = LANGUAGE_NAMES.get(target, target)
                 self._report("synthesize", 0.05,
