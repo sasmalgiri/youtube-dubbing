@@ -6,6 +6,9 @@ export interface DubbingSettings {
     tts_rate: string;
     mix_original: boolean;
     original_volume: number;
+    use_chatterbox: boolean;
+    use_elevenlabs: boolean;
+    use_edge_tts: boolean;
 }
 
 interface SettingsPanelProps {
@@ -43,6 +46,73 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
 
             {open && (
                 <div className="px-5 pb-5 space-y-5 animate-slide-up border-t border-border pt-4">
+                    {/* TTS Engines */}
+                    <div>
+                        <p className="text-sm font-medium text-text-primary mb-3">TTS Engines</p>
+                        <div className="space-y-3">
+                            {/* Chatterbox */}
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <p className="text-sm text-text-primary">Chatterbox AI</p>
+                                    <p className="text-xs text-text-muted">Free, GPU required, most human-like</p>
+                                </div>
+                                <button
+                                    onClick={() => update({ use_chatterbox: !settings.use_chatterbox })}
+                                    className={`
+                                        w-11 h-6 rounded-full transition-colors relative
+                                        ${settings.use_chatterbox ? 'bg-primary' : 'bg-white/10'}
+                                    `}
+                                >
+                                    <div className={`
+                                        w-4 h-4 rounded-full bg-white absolute top-1 transition-transform
+                                        ${settings.use_chatterbox ? 'translate-x-6' : 'translate-x-1'}
+                                    `} />
+                                </button>
+                            </div>
+
+                            {/* ElevenLabs */}
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <p className="text-sm text-text-primary">ElevenLabs</p>
+                                    <p className="text-xs text-text-muted">Paid API, needs ELEVENLABS_API_KEY in .env</p>
+                                </div>
+                                <button
+                                    onClick={() => update({ use_elevenlabs: !settings.use_elevenlabs })}
+                                    className={`
+                                        w-11 h-6 rounded-full transition-colors relative
+                                        ${settings.use_elevenlabs ? 'bg-primary' : 'bg-white/10'}
+                                    `}
+                                >
+                                    <div className={`
+                                        w-4 h-4 rounded-full bg-white absolute top-1 transition-transform
+                                        ${settings.use_elevenlabs ? 'translate-x-6' : 'translate-x-1'}
+                                    `} />
+                                </button>
+                            </div>
+
+                            {/* Edge-TTS */}
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <p className="text-sm text-text-primary">Edge-TTS</p>
+                                    <p className="text-xs text-text-muted">Free, no GPU needed, decent quality</p>
+                                </div>
+                                <button
+                                    onClick={() => update({ use_edge_tts: !settings.use_edge_tts })}
+                                    className={`
+                                        w-11 h-6 rounded-full transition-colors relative
+                                        ${settings.use_edge_tts ? 'bg-primary' : 'bg-white/10'}
+                                    `}
+                                >
+                                    <div className={`
+                                        w-4 h-4 rounded-full bg-white absolute top-1 transition-transform
+                                        ${settings.use_edge_tts ? 'translate-x-6' : 'translate-x-1'}
+                                    `} />
+                                </button>
+                            </div>
+                        </div>
+                        <p className="text-[10px] text-text-muted mt-2">First enabled engine from top to bottom will be used.</p>
+                    </div>
+
                     {/* TTS Speech Rate */}
                     <div>
                         <label className="label mb-2 block">

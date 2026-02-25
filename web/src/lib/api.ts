@@ -19,6 +19,9 @@ export interface JobCreateRequest {
     tts_rate?: string;
     mix_original?: boolean;
     original_volume?: number;
+    use_chatterbox?: boolean;
+    use_elevenlabs?: boolean;
+    use_edge_tts?: boolean;
 }
 
 export interface JobStatus {

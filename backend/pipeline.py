@@ -85,6 +85,9 @@ class PipelineConfig:
     tts_rate: str = "+0%"
     mix_original: bool = False
     original_volume: float = 0.10
+    use_chatterbox: bool = True
+    use_elevenlabs: bool = False
+    use_edge_tts: bool = False
 
 
 class Pipeline:
@@ -796,9 +799,23 @@ class Pipeline:
 
     # ── Natural TTS + Video sync ────────────────────────────────────────
     def _generate_tts_natural(self, segments):
-        """Generate TTS at natural speed using Chatterbox only."""
-        self._report("synthesize", 0.05, "Using Chatterbox TTS (GPU, human-like voice)...")
-        return self._tts_chatterbox(segments)
+        """Generate TTS at natural speed. Uses first enabled engine in priority order."""
+        if self.cfg.use_chatterbox:
+            self._report("synthesize", 0.05, "Using Chatterbox TTS (GPU, human-like voice)...")
+            return self._tts_chatterbox(segments)
+
+        if self.cfg.use_elevenlabs:
+            elevenlabs_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+            if elevenlabs_key:
+                self._report("synthesize", 0.05, "Using ElevenLabs for human-like voice...")
+                return self._tts_elevenlabs(segments, elevenlabs_key)
+            raise RuntimeError("ElevenLabs enabled but ELEVENLABS_API_KEY not set in .env")
+
+        if self.cfg.use_edge_tts:
+            self._report("synthesize", 0.05, "Using Edge-TTS (free, no GPU)...")
+            return self._tts_edge(segments)
+
+        raise RuntimeError("No TTS engine enabled! Turn on at least one in settings.")
 
     def _tts_chatterbox(self, segments):
         """Generate TTS using Chatterbox — free, local, human-like AI voice."""

@@ -17,6 +17,9 @@ export default function HomePage() {
         tts_rate: '+0%',
         mix_original: false,
         original_volume: 0.10,
+        use_chatterbox: true,
+        use_elevenlabs: false,
+        use_edge_tts: false,
     });
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);

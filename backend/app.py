@@ -66,6 +66,9 @@ class JobCreateRequest(BaseModel):
     tts_rate: str = "+0%"
     mix_original: bool = False
     original_volume: float = 0.10
+    use_chatterbox: bool = True
+    use_elevenlabs: bool = False
+    use_edge_tts: bool = False
 
 
 # ── Step weights for overall progress ────────────────────────────────────────
@@ -162,6 +165,9 @@ def _run_job(job: Job, req: JobCreateRequest):
             tts_rate=req.tts_rate,
             mix_original=req.mix_original,
             original_volume=req.original_volume,
+            use_chatterbox=req.use_chatterbox,
+            use_elevenlabs=req.use_elevenlabs,
+            use_edge_tts=req.use_edge_tts,
         )
 
         pipeline = Pipeline(cfg, on_progress=_make_progress_callback(job))
