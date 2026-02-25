@@ -94,7 +94,7 @@ app = FastAPI(title="VoiceDub API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"],  # Allow all origins (needed for Colab ngrok tunnel)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

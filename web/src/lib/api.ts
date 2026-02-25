@@ -1,4 +1,6 @@
-const API_BASE = '';  // Uses Next.js rewrite proxy to localhost:8000
+// Set NEXT_PUBLIC_API_URL to your Colab ngrok URL when running backend remotely
+// e.g., NEXT_PUBLIC_API_URL=https://abc-123.ngrok-free.app
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';  // empty = Next.js proxy to localhost:8000
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
