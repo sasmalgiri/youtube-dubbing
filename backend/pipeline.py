@@ -796,29 +796,9 @@ class Pipeline:
 
     # ── Natural TTS + Video sync ────────────────────────────────────────
     def _generate_tts_natural(self, segments):
-        """Generate TTS at natural speed.
-
-        Priority: Chatterbox (free, GPU) > ElevenLabs (paid API) > Edge-TTS (free)
-        """
-        elevenlabs_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
-
-        # Try Chatterbox first (free, local, most human-like)
-        use_chatterbox = os.environ.get("TTS_ENGINE", "").strip().lower()
-        if use_chatterbox != "edge":
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    self._report("synthesize", 0.05, "Using Chatterbox TTS (GPU, human-like voice)...")
-                    return self._tts_chatterbox(segments)
-            except ImportError:
-                pass
-
-        if elevenlabs_key:
-            self._report("synthesize", 0.05, "Using ElevenLabs for human-like voice...")
-            return self._tts_elevenlabs(segments, elevenlabs_key)
-
-        self._report("synthesize", 0.05, "Using Edge-TTS...")
-        return self._tts_edge(segments)
+        """Generate TTS at natural speed using Chatterbox only."""
+        self._report("synthesize", 0.05, "Using Chatterbox TTS (GPU, human-like voice)...")
+        return self._tts_chatterbox(segments)
 
     def _tts_chatterbox(self, segments):
         """Generate TTS using Chatterbox — free, local, human-like AI voice."""
@@ -856,20 +836,8 @@ class Pipeline:
 
             except Exception as e:
                 self._report("synthesize", 0.1 + 0.8 * ((i + 1) / len(segments)),
-                             f"Chatterbox error on seg {i+1}: {e}, falling back to edge-tts...")
-                try:
-                    asyncio.run(self._edge_tts_single(text, self.cfg.work_dir / f"tts_{i:04d}.mp3"))
-                    mp3 = self.cfg.work_dir / f"tts_{i:04d}.mp3"
-                    if mp3.exists():
-                        subprocess.run(
-                            [self._ffmpeg, "-y", "-i", str(mp3),
-                             "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
-                             str(wav_path)],
-                            check=True, capture_output=True,
-                        )
-                        mp3.unlink(missing_ok=True)
-                except Exception:
-                    continue
+                             f"Chatterbox error on seg {i+1}: {e}, skipping...")
+                continue
 
             if not wav_path.exists() or wav_path.stat().st_size == 0:
                 continue

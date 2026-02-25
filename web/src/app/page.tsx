@@ -4,41 +4,15 @@ import { useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import URLInput from '@/components/URLInput';
 import LanguageSelector, { LANGUAGES } from '@/components/LanguageSelector';
-import VoiceSelector from '@/components/VoiceSelector';
 import SettingsPanel, { type DubbingSettings } from '@/components/SettingsPanel';
 import JobCard from '@/components/JobCard';
 import { createJob, getJobs, type JobStatus } from '@/lib/api';
 
-const DEFAULT_VOICES: Record<string, string> = {
-    hi: 'hi-IN-SwaraNeural',
-    en: 'en-US-JennyNeural',
-    es: 'es-ES-ElviraNeural',
-    fr: 'fr-FR-DeniseNeural',
-    de: 'de-DE-KatjaNeural',
-    ja: 'ja-JP-NanamiNeural',
-    ko: 'ko-KR-SunHiNeural',
-    zh: 'zh-CN-XiaoxiaoNeural',
-    pt: 'pt-BR-FranciscaNeural',
-    ru: 'ru-RU-SvetlanaNeural',
-    ar: 'ar-SA-ZariyahNeural',
-    it: 'it-IT-ElsaNeural',
-    tr: 'tr-TR-EmelNeural',
-    bn: 'bn-IN-TanishaaNeural',
-    ta: 'ta-IN-PallaviNeural',
-    te: 'te-IN-ShrutiNeural',
-    mr: 'mr-IN-AarohiNeural',
-    gu: 'gu-IN-DhwaniNeural',
-    kn: 'kn-IN-SapnaNeural',
-    ml: 'ml-IN-SobhanaNeural',
-    pa: 'pa-IN-GurpreetNeural',
-    ur: 'ur-PK-UzmaNeural',
-};
 
 export default function HomePage() {
     const router = useRouter();
     const [sourceLanguage, setSourceLanguage] = useState('auto');
     const [targetLanguage, setTargetLanguage] = useState('hi');
-    const [voice, setVoice] = useState('hi-IN-SwaraNeural');
     const [settings, setSettings] = useState<DubbingSettings>({
         tts_rate: '+0%',
         mix_original: false,
@@ -47,14 +21,6 @@ export default function HomePage() {
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [recentJobs, setRecentJobs] = useState<JobStatus[]>([]);
-
-    // When target language changes, pick a default voice for that language
-    useEffect(() => {
-        const defaultVoice = DEFAULT_VOICES[targetLanguage];
-        if (defaultVoice) {
-            setVoice(defaultVoice);
-        }
-    }, [targetLanguage]);
 
     const loadJobs = useCallback(() => {
         getJobs().then(setRecentJobs).catch(() => {});
@@ -74,7 +40,6 @@ export default function HomePage() {
                 url,
                 source_language: sourceLanguage,
                 target_language: targetLanguage,
-                voice,
                 ...settings,
             });
             router.push(`/jobs/${id}`);
@@ -82,7 +47,7 @@ export default function HomePage() {
             setError(e instanceof Error ? e.message : 'Failed to start dubbing');
             setSubmitting(false);
         }
-    }, [sourceLanguage, targetLanguage, voice, settings, router]);
+    }, [sourceLanguage, targetLanguage, settings, router]);
 
     return (
         <div className="min-h-screen">
@@ -95,7 +60,7 @@ export default function HomePage() {
                             <span className="text-primary"> into {targetName}</span>
                         </h1>
                         <p className="text-text-secondary text-lg">
-                            Paste a YouTube URL and get a dubbed video with a single AI voice.
+                            Paste a YouTube URL and get a dubbed video with Chatterbox AI voice.
                         </p>
                     </div>
 
@@ -120,11 +85,6 @@ export default function HomePage() {
                         onSourceChange={setSourceLanguage}
                         onTargetChange={setTargetLanguage}
                     />
-                </div>
-
-                {/* Voice Selector */}
-                <div className="glass-card p-5">
-                    <VoiceSelector value={voice} onChange={setVoice} language={targetLanguage} />
                 </div>
 
                 {/* Advanced Settings */}

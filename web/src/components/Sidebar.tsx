@@ -101,7 +101,7 @@ export default function Sidebar({ onNewDubbing }: SidebarProps) {
             {/* Footer */}
             <div className="p-4 border-t border-border">
                 <p className="text-[10px] text-text-muted text-center">
-                    Powered by Whisper + Edge-TTS
+                    Powered by Whisper + Chatterbox AI
                 </p>
             </div>
         </aside>
