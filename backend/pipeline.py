@@ -234,15 +234,31 @@ class Pipeline:
         self._ffmpeg = resolved
 
     # ── Step 1: Ingest ───────────────────────────────────────────────────
+    def _find_cookies_file(self) -> Optional[str]:
+        """Find a YouTube cookies file if available."""
+        # Check common locations
+        for path in [
+            Path(__file__).resolve().parent / "cookies.txt",
+            Path.home() / "cookies.txt",
+            Path("/content/cookies.txt"),  # Colab
+        ]:
+            if path.exists():
+                return str(path)
+        return None
+
     def _ingest_source(self, src: str) -> Path:
         if re.match(r"^https?://", src):
             out_tpl = str(self.cfg.work_dir / "source.%(ext)s")
 
-            # Get video title first (separate call) — try without cookies
+            # Check for cookies file (needed on Colab/servers)
+            cookies_file = self._find_cookies_file()
+            cookies_args = ["--cookies", cookies_file] if cookies_file else []
+
+            # Get video title first
             try:
+                title_cmd = [self._ytdlp, "--print", "%(title)s", "--no-download"] + cookies_args + [src]
                 title_result = subprocess.run(
-                    [self._ytdlp, "--print", "%(title)s", "--no-download", src],
-                    capture_output=True, text=True, timeout=30,
+                    title_cmd, capture_output=True, text=True, timeout=30,
                 )
                 if title_result.returncode == 0 and title_result.stdout.strip():
                     self.video_title = title_result.stdout.strip().split("\n")[0]
@@ -253,18 +269,14 @@ class Pipeline:
 
             # Download video
             try:
-                subprocess.run(
-                    [
-                        self._ytdlp,
-                        "--ffmpeg-location", str(Path(self._ffmpeg).parent),
-                        "-f", "bv*+ba/b",
-                        "--merge-output-format", "mp4",
-                        "-o", out_tpl,
-                        src,
-                    ],
-                    check=True,
-                    capture_output=True,
-                )
+                dl_cmd = [
+                    self._ytdlp,
+                    "--ffmpeg-location", str(Path(self._ffmpeg).parent),
+                    "-f", "bv*+ba/b",
+                    "--merge-output-format", "mp4",
+                    "-o", out_tpl,
+                ] + cookies_args + [src]
+                subprocess.run(dl_cmd, check=True, capture_output=True)
             except subprocess.CalledProcessError as e:
                 stderr = e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or "Unknown error")
                 raise RuntimeError(f"yt-dlp failed: {stderr}") from e
