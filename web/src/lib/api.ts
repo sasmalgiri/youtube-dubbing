@@ -2,6 +2,11 @@
 // e.g., NEXT_PUBLIC_API_URL=https://abc-123.ngrok-free.app
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';  // empty = Next.js proxy to localhost:8000
 
+// ngrok free tier requires this header to skip the interstitial warning page
+const EXTRA_HEADERS: Record<string, string> = API_BASE.includes('ngrok')
+    ? { 'ngrok-skip-browser-warning': 'true' }
+    : {};
+
 // ── Types ───────────────────────────────────────────────────────────────────
 
 export interface Voice {
@@ -61,7 +66,9 @@ export interface SSEEvent {
 // ── API Functions ───────────────────────────────────────────────────────────
 
 export async function fetchVoices(lang: string = 'hi'): Promise<Voice[]> {
-    const res = await fetch(`${API_BASE}/api/voices?lang=${lang}`);
+    const res = await fetch(`${API_BASE}/api/voices?lang=${lang}`, {
+        headers: { ...EXTRA_HEADERS },
+    });
     if (!res.ok) throw new Error('Failed to fetch voices');
     return res.json();
 }
@@ -69,7 +76,7 @@ export async function fetchVoices(lang: string = 'hi'): Promise<Voice[]> {
 export async function createJob(req: JobCreateRequest): Promise<{ id: string }> {
     const res = await fetch(`${API_BASE}/api/jobs`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...EXTRA_HEADERS },
         body: JSON.stringify(req),
     });
     if (!res.ok) {
@@ -91,6 +98,7 @@ export async function createJobUpload(
 
     const res = await fetch(`${API_BASE}/api/jobs/upload`, {
         method: 'POST',
+        headers: { ...EXTRA_HEADERS },
         body: form,
     });
     if (!res.ok) {
@@ -101,25 +109,34 @@ export async function createJobUpload(
 }
 
 export async function getJob(id: string): Promise<JobStatus> {
-    const res = await fetch(`${API_BASE}/api/jobs/${id}`);
+    const res = await fetch(`${API_BASE}/api/jobs/${id}`, {
+        headers: { ...EXTRA_HEADERS },
+    });
     if (!res.ok) throw new Error('Failed to fetch job');
     return res.json();
 }
 
 export async function getJobs(): Promise<JobStatus[]> {
-    const res = await fetch(`${API_BASE}/api/jobs`);
+    const res = await fetch(`${API_BASE}/api/jobs`, {
+        headers: { ...EXTRA_HEADERS },
+    });
     if (!res.ok) throw new Error('Failed to fetch jobs');
     return res.json();
 }
 
 export async function getTranscript(id: string): Promise<Transcript> {
-    const res = await fetch(`${API_BASE}/api/jobs/${id}/transcript`);
+    const res = await fetch(`${API_BASE}/api/jobs/${id}/transcript`, {
+        headers: { ...EXTRA_HEADERS },
+    });
     if (!res.ok) throw new Error('Failed to fetch transcript');
     return res.json();
 }
 
 export async function deleteJob(id: string): Promise<void> {
-    const res = await fetch(`${API_BASE}/api/jobs/${id}`, { method: 'DELETE' });
+    const res = await fetch(`${API_BASE}/api/jobs/${id}`, {
+        method: 'DELETE',
+        headers: { ...EXTRA_HEADERS },
+    });
     if (!res.ok) throw new Error('Failed to delete job');
 }
 
@@ -155,31 +172,71 @@ export async function localDownloadAndDub(
     return res.json();
 }
 
-// ── SSE Helper ──────────────────────────────────────────────────────────────
+// ── SSE Helper (with ngrok header support) ──────────────────────────────────
 
 export function subscribeToJobEvents(
     jobId: string,
     onEvent: (event: SSEEvent) => void,
     onError?: (error: Error) => void,
 ): () => void {
-    const eventSource = new EventSource(`${API_BASE}/api/jobs/${jobId}/events`);
+    // EventSource can't send custom headers, so use fetch-based SSE
+    // for ngrok compatibility
+    const controller = new AbortController();
+    let stopped = false;
 
-    eventSource.onmessage = (e) => {
+    (async () => {
         try {
-            const data: SSEEvent = JSON.parse(e.data);
-            onEvent(data);
-            if (data.type === 'complete') {
-                eventSource.close();
+            const res = await fetch(`${API_BASE}/api/jobs/${jobId}/events`, {
+                headers: {
+                    'Accept': 'text/event-stream',
+                    ...EXTRA_HEADERS,
+                },
+                signal: controller.signal,
+            });
+
+            if (!res.ok || !res.body) {
+                onError?.(new Error('SSE connection failed'));
+                return;
             }
-        } catch {
-            // ignore parse errors
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (!stopped) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (line.startsWith('data:')) {
+                        const jsonStr = line.slice(5).trim();
+                        if (!jsonStr) continue;
+                        try {
+                            const data: SSEEvent = JSON.parse(jsonStr);
+                            onEvent(data);
+                            if (data.type === 'complete') {
+                                stopped = true;
+                                return;
+                            }
+                        } catch {
+                            // ignore parse errors
+                        }
+                    }
+                }
+            }
+        } catch (err: any) {
+            if (!stopped && err.name !== 'AbortError') {
+                onError?.(new Error('SSE connection lost'));
+            }
         }
-    };
+    })();
 
-    eventSource.onerror = () => {
-        eventSource.close();
-        onError?.(new Error('SSE connection lost'));
+    return () => {
+        stopped = true;
+        controller.abort();
     };
-
-    return () => eventSource.close();
 }
