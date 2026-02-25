@@ -501,16 +501,20 @@ class Pipeline:
     def _translate_segments(self, segments):
         """Translate each segment individually, preserving timestamps for sync.
 
-        Priority: OpenAI GPT-4o > Gemini Pro > Google Translate fallback
+        Priority: OpenAI GPT-4o > Groq Llama 3.3 > Gemini > Google Translate fallback
         """
         openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        groq_key = os.environ.get("GROQ_API_KEY", "").strip()
         gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
 
         if openai_key:
             self._report("translate", 0.05, "Using GPT-4o for premium translation...")
             self._translate_segments_openai(segments, openai_key)
+        elif groq_key:
+            self._report("translate", 0.05, "Using Groq (Llama 3.3 70B) for fast translation...")
+            self._translate_segments_groq(segments, groq_key)
         elif gemini_key:
-            self._report("translate", 0.05, "Using Gemini Pro for translation...")
+            self._report("translate", 0.05, "Using Gemini for translation...")
             self._translate_segments_gemini(segments, gemini_key)
         else:
             self._report("translate", 0.1, "No API keys found, using Google Translate...")
@@ -581,6 +585,77 @@ class Pipeline:
             self._report("translate", 0.1 + 0.9 * ((batch_idx + 1) / total_batches),
                          f"Translated batch {batch_idx + 1}/{total_batches}")
 
+    def _translate_segments_groq(self, segments, api_key):
+        """Translate segments using Groq (Llama 3.3 70B) — fast, free, context-aware."""
+        from groq import Groq
+        client = Groq(api_key=api_key)
+
+        target_name = LANGUAGE_NAMES.get(self.cfg.target_language, self.cfg.target_language)
+        source_name = LANGUAGE_NAMES.get(self.cfg.source_language, "the source language") if self.cfg.source_language != "auto" else "the detected language"
+
+        batch_size = 30
+        total_batches = (len(segments) + batch_size - 1) // batch_size
+
+        system_msg = (
+            f"You are a street-smart dubbing translator who speaks {target_name} like a real person. "
+            f"You translate video scripts into colloquial, everyday spoken {target_name} with natural slang — "
+            f"the way real people actually talk, NOT textbook language. "
+            f"Mix in commonly used English words where native speakers naturally would. "
+            f"Keep proper nouns, brands, and technical terms as-is. "
+            f"The [Xs] shows speaking time — keep translation speakable in roughly that duration. "
+            f"Output ONLY numbered translations, one per line."
+        )
+
+        for batch_idx in range(total_batches):
+            start = batch_idx * batch_size
+            end = min(start + batch_size, len(segments))
+            batch = segments[start:end]
+
+            lines = []
+            for i, seg in enumerate(batch):
+                duration = seg["end"] - seg["start"]
+                lines.append(f"{i+1}. [{duration:.1f}s] {seg['text']}")
+
+            user_msg = (
+                f"Translate each line from {source_name} to {target_name}. "
+                f"Casual, spoken style. Output ONLY numbered {target_name} translations:\n\n"
+                + "\n".join(lines)
+            )
+
+            retries = 3
+            success = False
+            for attempt in range(retries):
+                try:
+                    response = client.chat.completions.create(
+                        model="llama-3.3-70b-versatile",
+                        messages=[
+                            {"role": "system", "content": system_msg},
+                            {"role": "user", "content": user_msg},
+                        ],
+                        temperature=0.7,
+                        max_tokens=4096,
+                    )
+                    result_text = response.choices[0].message.content
+                    translations = self._parse_numbered_translations(result_text, len(batch))
+                    for i, seg in enumerate(batch):
+                        seg["text_translated"] = translations[i] if translations[i] else seg["text"]
+                    success = True
+                    break
+                except Exception as e:
+                    if attempt < retries - 1:
+                        wait = 2 * (attempt + 1)
+                        self._report("translate", 0.1 + 0.8 * (batch_idx / total_batches),
+                                     f"Groq rate limited, retrying in {wait}s...")
+                        time.sleep(wait)
+
+            if not success:
+                self._report("translate", 0.1, "Groq failed, using Google Translate for batch...")
+                for seg in batch:
+                    seg["text_translated"] = self._translate_single_google(seg["text"])
+
+            self._report("translate", 0.1 + 0.9 * ((batch_idx + 1) / total_batches),
+                         f"Translated batch {batch_idx + 1}/{total_batches} (Groq)")
+
     def _translate_segments_openai(self, segments, api_key):
         """Translate segments using OpenAI GPT-4o for highest quality."""
         from openai import OpenAI
@@ -643,13 +718,18 @@ class Pipeline:
                         time.sleep(wait)
 
             if not success:
-                # Fall back to Gemini, then Google Translate
+                # Fall back to Groq > Gemini > Google Translate
+                groq_key = os.environ.get("GROQ_API_KEY", "").strip()
                 gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
-                if gemini_key:
+                if groq_key:
+                    self._report("translate", 0.1, "GPT-4o failed, falling back to Groq...")
+                    for seg in batch:
+                        seg["text_translated"] = seg.get("text", "")
+                    self._translate_segments_groq(batch, groq_key)
+                elif gemini_key:
                     self._report("translate", 0.1, "GPT-4o failed, falling back to Gemini...")
                     for seg in batch:
                         seg["text_translated"] = seg.get("text", "")
-                    # Re-translate just this batch with Gemini
                     self._translate_segments_gemini(batch, gemini_key)
                 else:
                     for seg in batch:

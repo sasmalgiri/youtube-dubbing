@@ -6,6 +6,7 @@ edge-tts==7.2.7
 faster-whisper==1.1.1
 deep-translator==1.11.4
 google-genai>=1.0.0
+groq>=0.9.0
 openai>=1.0.0
 elevenlabs>=2.0.0
 chatterbox-tts>=0.1.0
