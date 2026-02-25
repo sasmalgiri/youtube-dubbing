@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -234,6 +234,56 @@ def create_job(req: JobCreateRequest):
     job_id = uuid.uuid4().hex[:12]
     job = Job(id=job_id, source_url=url, target_language=req.target_language)
     JOBS[job_id] = job
+
+    t = threading.Thread(target=_run_job, args=(job, req), daemon=True)
+    t.start()
+
+    return {"id": job_id}
+
+
+@app.post("/api/jobs/upload")
+async def create_job_upload(
+    file: UploadFile = File(...),
+    source_language: str = Form("auto"),
+    target_language: str = Form("hi"),
+    tts_rate: str = Form("+0%"),
+    mix_original: bool = Form(False),
+    original_volume: float = Form(0.10),
+    use_chatterbox: bool = Form(True),
+    use_elevenlabs: bool = Form(False),
+    use_edge_tts: bool = Form(False),
+):
+    """Create a dubbing job from an uploaded video file."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file uploaded")
+
+    job_id = uuid.uuid4().hex[:12]
+    job_dir = OUTPUTS / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    work_dir = job_dir / "work"
+    work_dir.mkdir(exist_ok=True)
+
+    # Save uploaded file
+    ext = Path(file.filename).suffix or ".mp4"
+    saved_path = work_dir / f"source{ext}"
+    with open(saved_path, "wb") as f:
+        while chunk := await file.read(1024 * 1024):  # 1MB chunks
+            f.write(chunk)
+
+    job = Job(id=job_id, source_url=f"upload:{file.filename}", target_language=target_language)
+    JOBS[job_id] = job
+
+    req = JobCreateRequest(
+        url=str(saved_path),
+        source_language=source_language,
+        target_language=target_language,
+        tts_rate=tts_rate,
+        mix_original=mix_original,
+        original_volume=original_volume,
+        use_chatterbox=use_chatterbox,
+        use_elevenlabs=use_elevenlabs,
+        use_edge_tts=use_edge_tts,
+    )
 
     t = threading.Thread(target=_run_job, args=(job, req), daemon=True)
     t.start()

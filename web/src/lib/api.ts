@@ -79,6 +79,27 @@ export async function createJob(req: JobCreateRequest): Promise<{ id: string }> 
     return res.json();
 }
 
+export async function createJobUpload(
+    file: File,
+    settings: Omit<JobCreateRequest, 'url'>,
+): Promise<{ id: string }> {
+    const form = new FormData();
+    form.append('file', file);
+    Object.entries(settings).forEach(([key, val]) => {
+        if (val !== undefined) form.append(key, String(val));
+    });
+
+    const res = await fetch(`${API_BASE}/api/jobs/upload`, {
+        method: 'POST',
+        body: form,
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Upload failed' }));
+        throw new Error(err.detail || 'Failed to upload and create job');
+    }
+    return res.json();
+}
+
 export async function getJob(id: string): Promise<JobStatus> {
     const res = await fetch(`${API_BASE}/api/jobs/${id}`);
     if (!res.ok) throw new Error('Failed to fetch job');

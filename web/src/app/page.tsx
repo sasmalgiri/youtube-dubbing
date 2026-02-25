@@ -6,7 +6,7 @@ import URLInput from '@/components/URLInput';
 import LanguageSelector, { LANGUAGES } from '@/components/LanguageSelector';
 import SettingsPanel, { type DubbingSettings } from '@/components/SettingsPanel';
 import JobCard from '@/components/JobCard';
-import { createJob, getJobs, type JobStatus } from '@/lib/api';
+import { createJob, createJobUpload, getJobs, type JobStatus } from '@/lib/api';
 
 
 export default function HomePage() {
@@ -52,6 +52,22 @@ export default function HomePage() {
         }
     }, [sourceLanguage, targetLanguage, settings, router]);
 
+    const handleFileSubmit = useCallback(async (file: File) => {
+        setSubmitting(true);
+        setError(null);
+        try {
+            const { id } = await createJobUpload(file, {
+                source_language: sourceLanguage,
+                target_language: targetLanguage,
+                ...settings,
+            });
+            router.push(`/jobs/${id}`);
+        } catch (e) {
+            setError(e instanceof Error ? e.message : 'Failed to upload and start dubbing');
+            setSubmitting(false);
+        }
+    }, [sourceLanguage, targetLanguage, settings, router]);
+
     return (
         <div className="min-h-screen">
             {/* Hero Section */}
@@ -63,12 +79,12 @@ export default function HomePage() {
                             <span className="text-primary"> into {targetName}</span>
                         </h1>
                         <p className="text-text-secondary text-lg">
-                            Paste a YouTube URL and get a dubbed video with Chatterbox AI voice.
+                            Paste a YouTube URL or upload a video to get it dubbed with Chatterbox AI voice.
                         </p>
                     </div>
 
                     {/* URL Input */}
-                    <URLInput onSubmit={handleSubmit} disabled={submitting} />
+                    <URLInput onSubmit={handleSubmit} onFileSubmit={handleFileSubmit} disabled={submitting} />
 
                     {error && (
                         <div className="mt-4 p-3 rounded-xl bg-error/10 border border-error/20 text-error text-sm">
