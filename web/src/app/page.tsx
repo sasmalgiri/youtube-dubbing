@@ -6,7 +6,7 @@ import URLInput from '@/components/URLInput';
 import LanguageSelector, { LANGUAGES } from '@/components/LanguageSelector';
 import SettingsPanel, { type DubbingSettings } from '@/components/SettingsPanel';
 import JobCard from '@/components/JobCard';
-import { createJob, createJobUpload, getJobs, type JobStatus } from '@/lib/api';
+import { createJob, createJobUpload, localDownloadAndDub, isRemoteBackend, getJobs, type JobStatus } from '@/lib/api';
 
 
 export default function HomePage() {
@@ -39,12 +39,18 @@ export default function HomePage() {
         setSubmitting(true);
         setError(null);
         try {
-            const { id } = await createJob({
-                url,
+            const jobSettings = {
                 source_language: sourceLanguage,
                 target_language: targetLanguage,
                 ...settings,
-            });
+            };
+
+            // Remote backend (Colab): download locally first, then upload
+            // Local backend: let backend download directly
+            const { id } = isRemoteBackend
+                ? await localDownloadAndDub(url, jobSettings)
+                : await createJob({ url, ...jobSettings });
+
             router.push(`/jobs/${id}`);
         } catch (e) {
             setError(e instanceof Error ? e.message : 'Failed to start dubbing');

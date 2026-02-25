@@ -135,6 +135,26 @@ export function resultSrtUrl(id: string): string {
     return `${API_BASE}/api/jobs/${id}/srt`;
 }
 
+// ── Local Download + Upload (for remote backend) ────────────────────────────
+
+export const isRemoteBackend = !!API_BASE;
+
+export async function localDownloadAndDub(
+    url: string,
+    settings: Omit<JobCreateRequest, 'url'>,
+): Promise<{ id: string }> {
+    const res = await fetch('/api/local-dub', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, ...settings }),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Local download failed' }));
+        throw new Error(err.detail || 'Failed to download and dub');
+    }
+    return res.json();
+}
+
 // ── SSE Helper ──────────────────────────────────────────────────────────────
 
 export function subscribeToJobEvents(
