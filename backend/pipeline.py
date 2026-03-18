@@ -2328,10 +2328,14 @@ class Pipeline:
         # Fix Windows encoding: Coqui TTS prints non-ASCII text to stdout/stderr
         os.environ["PYTHONIOENCODING"] = "utf-8"
         import sys, io
-        if hasattr(sys.stdout, 'buffer'):
-            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-        if hasattr(sys.stderr, 'buffer'):
-            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+        _orig_stdout, _orig_stderr = sys.stdout, sys.stderr
+        try:
+            if hasattr(sys.stdout, 'buffer'):
+                sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+            if hasattr(sys.stderr, 'buffer'):
+                sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+        except Exception:
+            pass  # If wrapping fails, continue with originals
         # PyTorch 2.6+ defaults weights_only=True which breaks Coqui's model loading
         _original_torch_load = torch.load
         torch.load = lambda *args, **kwargs: _original_torch_load(
@@ -2444,6 +2448,9 @@ class Pipeline:
         # Free GPU memory
         del tts_model
         torch.cuda.empty_cache()
+
+        # Restore original stdout/stderr (broken wrappers crash uvicorn logging)
+        sys.stdout, sys.stderr = _orig_stdout, _orig_stderr
 
         return tts_data
 
