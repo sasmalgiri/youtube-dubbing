@@ -208,6 +208,7 @@ class PipelineConfig:
     source_language: str = "auto"
     target_language: str = "hi"
     asr_model: str = "large-v3"
+    translation_engine: str = "auto"   # auto, gemini, groq, ollama, google, hinglish
     tts_voice: str = "hi-IN-SwaraNeural"
     tts_rate: str = "+0%"
     mix_original: bool = False
@@ -220,6 +221,9 @@ class PipelineConfig:
     prefer_youtube_subs: bool = False
     multi_speaker: bool = False
     transcribe_only: bool = False
+    audio_priority: bool = False
+    audio_bitrate: str = "192k"
+    encode_preset: str = "veryfast"
 
 
 class Pipeline:
@@ -1319,21 +1323,49 @@ class Pipeline:
     def _translate_segments(self, segments):
         """Translate each segment individually, preserving timestamps for sync.
 
-        Priority: OpenAI GPT-4o > Groq Llama 3.3 > Gemini > Google Translate fallback
+        Respects self.cfg.translation_engine setting.
+        Auto priority: OpenAI GPT-4o > Groq Llama 3.3 > Gemini > Ollama > Google Translate
         """
         openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
         groq_key = os.environ.get("GROQ_API_KEY", "").strip()
         gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        engine = self.cfg.translation_engine
 
+        # Specific engine selected
+        if engine == "hinglish" and self._ollama_available():
+            self._report("translate", 0.05, "Using Hinglish AI (custom Ollama model)...")
+            self._translate_segments_ollama(segments, force_model="hinglish-translator")
+            return
+        elif engine == "groq" and groq_key:
+            self._report("translate", 0.05, "Using Groq (Llama 3.3 70B) for translation...")
+            self._translate_segments_groq(segments, groq_key)
+            return
+        elif engine == "gemini" and gemini_key:
+            self._report("translate", 0.05, "Using Gemini for translation...")
+            self._translate_segments_gemini(segments, gemini_key)
+            return
+        elif engine == "ollama" and self._ollama_available():
+            self._report("translate", 0.05, "Using Ollama (local LLM) for translation...")
+            self._translate_segments_ollama(segments)
+            return
+        elif engine == "google":
+            self._report("translate", 0.1, "Using Google Translate...")
+            self._translate_segments_google(segments)
+            return
+
+        # Auto mode: best available
         if openai_key:
             self._report("translate", 0.05, "Using GPT-4o for premium translation...")
             self._translate_segments_openai(segments, openai_key)
-        elif gemini_key:
-            self._report("translate", 0.05, "Using Gemini for colloquial translation...")
-            self._translate_segments_gemini(segments, gemini_key)
         elif groq_key:
             self._report("translate", 0.05, "Using Groq (Llama 3.3 70B) for translation...")
             self._translate_segments_groq(segments, groq_key)
+        elif gemini_key:
+            self._report("translate", 0.05, "Using Gemini for colloquial translation...")
+            self._translate_segments_gemini(segments, gemini_key)
+        elif self._ollama_available():
+            self._report("translate", 0.05, "Using Ollama (local LLM) for translation...")
+            self._translate_segments_ollama(segments)
         else:
             self._report("translate", 0.1, "No API keys found, using Google Translate...")
             self._translate_segments_google(segments)
@@ -1485,6 +1517,93 @@ class Pipeline:
 
             self._report("translate", 0.1 + 0.9 * ((batch_idx + 1) / total_batches),
                          f"Translated batch {batch_idx + 1}/{total_batches} (Groq)")
+
+    def _translate_segments_ollama(self, segments, force_model: str = ""):
+        """Translate segments using local Ollama LLM in batches."""
+        import requests as _requests
+
+        target_name = LANGUAGE_NAMES.get(self.cfg.target_language, self.cfg.target_language)
+        source_name = LANGUAGE_NAMES.get(self.cfg.source_language, "the source language") if self.cfg.source_language != "auto" else "the detected language"
+
+        # Pick model
+        try:
+            resp = _requests.get("http://localhost:11434/api/tags", timeout=5)
+            models = [m["name"] for m in resp.json().get("models", [])]
+        except Exception:
+            models = []
+
+        model = None
+        if force_model:
+            model = force_model if any(force_model in m for m in models) else None
+        if not model:
+            preferred = (
+                ["hinglish-translator"] if self.cfg.target_language in ("hi", "hi-IN") else []
+            ) + ["qwen2.5:14b", "qwen2.5:32b", "llama3.1:8b", "llama3:8b", "gemma2:9b", "mistral:7b"]
+            for pref in preferred:
+                for m in models:
+                    if pref.split(":")[0] in m:
+                        model = m
+                        break
+                if model:
+                    break
+            if not model and models:
+                model = models[0]
+        if not model:
+            self._report("translate", 0.1, "No Ollama models found, using Google Translate...")
+            self._translate_segments_google(segments)
+            return
+
+        self._report("translate", 0.05, f"Using Ollama model: {model}")
+
+        batch_size = 15  # Smaller batches for local LLM
+        total_batches = (len(segments) + batch_size - 1) // batch_size
+
+        system_msg = (
+            f"You are a world-class dubbing translator. Make {target_name} sound like it was ORIGINALLY "
+            f"written by a native speaker — a real person talking, not a textbook.\n"
+            f"Sound like a YouTuber, podcast host, or friend explaining something. "
+            f"Use the EXACT way native speakers talk in everyday life. "
+            f"Keep English words people naturally mix in: 'actually', 'basically', 'problem', 'phone', 'video', 'so', 'but'. "
+            f"NEVER use formal/literary/textbook language. NO shudh Hindi, NO sadhu Bengali. "
+            f"Match the speaker's energy and emotion exactly. "
+            f"Keep proper nouns, brands, and technical terms unchanged.\n\n"
+            f"COMPLETENESS: Translate EVERY word and idea. NOTHING may be skipped. "
+            f"Output ONLY numbered translations. No notes or metadata."
+        )
+
+        for batch_idx in range(total_batches):
+            start = batch_idx * batch_size
+            end = min(start + batch_size, len(segments))
+            batch = segments[start:end]
+
+            lines = [f"{i+1}. {seg['text']}" for i, seg in enumerate(batch)]
+            user_msg = (
+                f"Translate each line from {source_name} to {target_name}. "
+                f"Natural, conversational, the way real people actually talk.\n\n"
+                + "\n".join(lines)
+            )
+
+            try:
+                resp = _requests.post("http://localhost:11434/api/chat", json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    "stream": False,
+                    "options": {"temperature": 0.7},
+                }, timeout=120)
+                result_text = resp.json().get("message", {}).get("content", "")
+                translations = self._parse_numbered_translations(result_text, len(batch))
+                for i, seg in enumerate(batch):
+                    seg["text_translated"] = translations[i] if translations[i] else seg["text"]
+            except Exception as e:
+                self._report("translate", 0.1, f"Ollama failed for batch: {e}, using Google Translate...")
+                for seg in batch:
+                    seg["text_translated"] = self._translate_single_google(seg["text"])
+
+            self._report("translate", 0.1 + 0.9 * ((batch_idx + 1) / total_batches),
+                         f"Translated batch {batch_idx + 1}/{total_batches} (Ollama: {model})")
 
     def _translate_segments_openai(self, segments, api_key):
         """Translate segments using OpenAI GPT-4o for highest quality."""

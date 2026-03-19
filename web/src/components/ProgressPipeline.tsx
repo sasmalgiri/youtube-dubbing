@@ -18,6 +18,7 @@ interface ProgressPipelineProps {
     message: string;
     isComplete: boolean;
     isError: boolean;
+    eta?: string;
 }
 
 function StepIcon({ icon, size = 16 }: { icon: string; size?: number }) {
@@ -41,7 +42,7 @@ function StepIcon({ icon, size = 16 }: { icon: string; size?: number }) {
     }
 }
 
-export default function ProgressPipeline({ currentStep, stepProgress, overallProgress, message, isComplete, isError }: ProgressPipelineProps) {
+export default function ProgressPipeline({ currentStep, stepProgress, overallProgress, message, isComplete, isError, eta }: ProgressPipelineProps) {
     const currentIndex = STEPS.findIndex(s => s.key === currentStep);
 
     return (
@@ -52,9 +53,14 @@ export default function ProgressPipeline({ currentStep, stepProgress, overallPro
                     <span className="text-sm font-medium text-text-primary">
                         {isComplete ? 'Dubbing Complete!' : isError ? 'Error Occurred' : 'Dubbing in Progress...'}
                     </span>
-                    <span className="text-sm text-text-muted">
-                        {Math.round(overallProgress * 100)}%
-                    </span>
+                    <div className="flex items-center gap-3">
+                        {eta && !isComplete && !isError && (
+                            <span className="text-xs text-text-muted">{eta}</span>
+                        )}
+                        <span className="text-sm text-text-muted">
+                            {Math.round(overallProgress * 100)}%
+                        </span>
+                    </div>
                 </div>
                 <div className="h-2 bg-white/5 rounded-full overflow-hidden">
                     <div

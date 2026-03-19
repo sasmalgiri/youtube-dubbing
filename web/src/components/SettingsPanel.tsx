@@ -3,6 +3,8 @@
 import { useState } from 'react';
 
 export interface DubbingSettings {
+    asr_model: string;
+    translation_engine: string;
     tts_rate: string;
     mix_original: boolean;
     original_volume: number;
@@ -14,6 +16,9 @@ export interface DubbingSettings {
     prefer_youtube_subs: boolean;
     multi_speaker: boolean;
     transcribe_only: boolean;
+    audio_priority: boolean;
+    audio_bitrate: string;
+    encode_preset: string;
 }
 
 interface SettingsPanelProps {
@@ -51,6 +56,87 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
 
             {open && (
                 <div className="px-5 pb-5 space-y-5 animate-slide-up border-t border-border pt-4">
+                    {/* Transcription (Whisper) */}
+                    <div>
+                        <p className="text-sm font-medium text-text-primary mb-3">Transcription (Whisper)</p>
+                        <div className="grid grid-cols-3 gap-2">
+                            {([['base', 'Base', 'Fast, lower accuracy'], ['medium', 'Medium', 'Balanced'], ['large-v3', 'Large-v3', 'Best accuracy, slowest']] as const).map(([key, label, desc]) => (
+                                <button
+                                    key={key}
+                                    onClick={() => update({ asr_model: key })}
+                                    className={`px-3 py-2.5 rounded-lg border text-left transition-all ${settings.asr_model === key ? 'border-primary bg-primary/10 text-primary-light' : 'border-border bg-white/[0.02] text-text-secondary hover:border-text-muted'}`}
+                                >
+                                    <p className="text-sm font-medium">{label}</p>
+                                    <p className="text-[10px] text-text-muted">{desc}</p>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Translation Engine */}
+                    <div>
+                        <p className="text-sm font-medium text-text-primary mb-3">Translation Engine</p>
+                        <div className="grid grid-cols-3 gap-2">
+                            {([['auto', 'Auto'], ['gemini', 'Gemini'], ['groq', 'Groq'], ['ollama', 'Ollama'], ['hinglish', 'Hinglish AI'], ['google', 'Google']] as const).map(([key, label]) => (
+                                <button
+                                    key={key}
+                                    onClick={() => update({ translation_engine: key })}
+                                    className={`px-3 py-2 rounded-lg border text-sm transition-all ${settings.translation_engine === key ? 'border-primary bg-primary/10 text-primary-light font-medium' : 'border-border bg-white/[0.02] text-text-secondary hover:border-text-muted'}`}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Audio & Performance */}
+                    <div className="space-y-3">
+                        <p className="text-sm font-medium text-text-primary">Audio & Performance</p>
+                        {/* Audio Priority */}
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <p className="text-sm text-text-primary">Audio Priority</p>
+                                <p className="text-xs text-text-muted">TTS speaks naturally, video adjusts (faster assembly)</p>
+                            </div>
+                            <button
+                                onClick={() => update({ audio_priority: !settings.audio_priority })}
+                                className={`w-11 h-6 rounded-full transition-colors relative ${settings.audio_priority ? 'bg-primary' : 'bg-white/10'}`}
+                            >
+                                <div className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${settings.audio_priority ? 'translate-x-6' : 'translate-x-1'}`} />
+                            </button>
+                        </div>
+                        {/* Audio Quality */}
+                        <div>
+                            <p className="text-xs text-text-secondary mb-1.5">Audio Quality</p>
+                            <div className="grid grid-cols-4 gap-1.5">
+                                {(['128k', '192k', '256k', '320k'] as const).map(br => (
+                                    <button
+                                        key={br}
+                                        onClick={() => update({ audio_bitrate: br })}
+                                        className={`px-2 py-1.5 rounded text-xs transition-all ${settings.audio_bitrate === br ? 'bg-primary/20 text-primary-light border border-primary/40' : 'bg-white/[0.03] text-text-muted border border-border hover:border-text-muted'}`}
+                                    >
+                                        {br}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        {/* Encode Speed */}
+                        <div>
+                            <p className="text-xs text-text-secondary mb-1.5">Video Encode Speed</p>
+                            <div className="grid grid-cols-4 gap-1.5">
+                                {(['ultrafast', 'veryfast', 'fast', 'medium'] as const).map(p => (
+                                    <button
+                                        key={p}
+                                        onClick={() => update({ encode_preset: p })}
+                                        className={`px-2 py-1.5 rounded text-xs transition-all ${settings.encode_preset === p ? 'bg-primary/20 text-primary-light border border-primary/40' : 'bg-white/[0.03] text-text-muted border border-border hover:border-text-muted'}`}
+                                    >
+                                        {p}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+
                     {/* YouTube Subtitles */}
                     <div className="flex items-center justify-between">
                         <div>

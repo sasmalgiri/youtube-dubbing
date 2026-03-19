@@ -39,6 +39,7 @@ export default function JobPage() {
         isError,
         isWaitingForSrt,
         error,
+        eta,
         restart,
     } = useJobProgress(jobId);
 
@@ -134,7 +135,48 @@ export default function JobPage() {
                     message={message}
                     isComplete={isComplete}
                     isError={isError}
+                    eta={eta}
                 />
+
+                {/* Resource pills */}
+                {status?.config && Object.keys(status.config).length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                        {status.config.asr_model && (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /></svg>
+                                Whisper {status.config.asr_model}
+                            </span>
+                        )}
+                        {status.config.translation_engine && (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m5 8 6 6" /><path d="m4 14 6-6 2-3" /><path d="M2 5h12" /><path d="M7 2h1" /></svg>
+                                {status.config.translation_engine}
+                            </span>
+                        )}
+                        {status.config.tts_engine && (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 10v3" /><path d="M6 6v11" /><path d="M10 3v18" /><path d="M14 8v7" /><path d="M18 5v13" /><path d="M22 10v3" /></svg>
+                                {status.config.tts_engine}
+                            </span>
+                        )}
+                        {status.config.audio_priority && (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>
+                                Audio Priority
+                            </span>
+                        )}
+                        {status.config.audio_bitrate && (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                                {status.config.audio_bitrate}
+                            </span>
+                        )}
+                        {status.config.encode_preset && status.config.encode_preset !== 'veryfast' && (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                                {status.config.encode_preset}
+                            </span>
+                        )}
+                    </div>
+                )}
 
                 {/* Error message */}
                 {isError && error && (

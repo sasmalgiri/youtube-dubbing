@@ -14,6 +14,8 @@ export default function HomePage() {
     const [sourceLanguage, setSourceLanguage] = useState('auto');
     const [targetLanguage, setTargetLanguage] = useState('hi');
     const [settings, setSettings] = useState<DubbingSettings>({
+        asr_model: 'large-v3',
+        translation_engine: 'auto',
         tts_rate: '+0%',
         mix_original: false,
         original_volume: 0.10,
@@ -25,6 +27,9 @@ export default function HomePage() {
         prefer_youtube_subs: false,
         multi_speaker: false,
         transcribe_only: false,
+        audio_priority: false,
+        audio_bitrate: '192k',
+        encode_preset: 'veryfast',
     });
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);

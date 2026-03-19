@@ -22,6 +22,8 @@ export interface JobCreateRequest {
     source_language?: string;
     target_language?: string;
     voice?: string;
+    asr_model?: string;
+    translation_engine?: string;
     tts_rate?: string;
     mix_original?: boolean;
     original_volume?: number;
@@ -33,6 +35,18 @@ export interface JobCreateRequest {
     prefer_youtube_subs?: boolean;
     multi_speaker?: boolean;
     transcribe_only?: boolean;
+    audio_priority?: boolean;
+    audio_bitrate?: string;
+    encode_preset?: string;
+}
+
+export interface JobConfig {
+    asr_model?: string;
+    translation_engine?: string;
+    tts_engine?: string;
+    audio_priority?: boolean;
+    audio_bitrate?: string;
+    encode_preset?: string;
 }
 
 export interface JobStatus {
@@ -47,6 +61,7 @@ export interface JobStatus {
     video_title: string;
     target_language: string;
     created_at: number;
+    config?: JobConfig;
 }
 
 export interface TranscriptSegment {

@@ -64,6 +64,8 @@ class JobCreateRequest(BaseModel):
     source_language: str = "auto"
     target_language: str = "hi"
     voice: str = "hi-IN-SwaraNeural"
+    asr_model: str = "large-v3"
+    translation_engine: str = "auto"
     tts_rate: str = "+0%"
     mix_original: bool = False
     original_volume: float = 0.10
@@ -75,6 +77,9 @@ class JobCreateRequest(BaseModel):
     prefer_youtube_subs: bool = False
     multi_speaker: bool = False
     transcribe_only: bool = False
+    audio_priority: bool = False
+    audio_bitrate: str = "192k"
+    encode_preset: str = "veryfast"
 
 
 # ── Step weights for overall progress ────────────────────────────────────────
@@ -167,6 +172,8 @@ def _run_job(job: Job, req: JobCreateRequest):
             output_path=out_path,
             source_language=req.source_language,
             target_language=req.target_language,
+            asr_model=req.asr_model,
+            translation_engine=req.translation_engine,
             tts_voice=voice,
             tts_rate=req.tts_rate,
             mix_original=req.mix_original,
@@ -179,6 +186,9 @@ def _run_job(job: Job, req: JobCreateRequest):
             prefer_youtube_subs=req.prefer_youtube_subs,
             multi_speaker=req.multi_speaker,
             transcribe_only=req.transcribe_only,
+            audio_priority=req.audio_priority,
+            audio_bitrate=req.audio_bitrate,
+            encode_preset=req.encode_preset,
         )
 
         pipeline = Pipeline(cfg, on_progress=_make_progress_callback(job))
@@ -283,6 +293,11 @@ async def create_job_upload(
     multi_speaker: bool = Form(False),
     transcribe_only: bool = Form(False),
     voice: str = Form("hi-IN-SwaraNeural"),
+    asr_model: str = Form("large-v3"),
+    translation_engine: str = Form("auto"),
+    audio_priority: bool = Form(False),
+    audio_bitrate: str = Form("192k"),
+    encode_preset: str = Form("veryfast"),
 ):
     """Create a dubbing job from an uploaded video file."""
     if not file.filename:
@@ -309,6 +324,8 @@ async def create_job_upload(
         source_language=source_language,
         target_language=target_language,
         voice=voice,
+        asr_model=asr_model,
+        translation_engine=translation_engine,
         tts_rate=tts_rate,
         mix_original=mix_original,
         original_volume=original_volume,
@@ -320,6 +337,9 @@ async def create_job_upload(
         prefer_youtube_subs=prefer_youtube_subs,
         multi_speaker=multi_speaker,
         transcribe_only=transcribe_only,
+        audio_priority=audio_priority,
+        audio_bitrate=audio_bitrate,
+        encode_preset=encode_preset,
     )
     job.original_req = req
 
@@ -327,6 +347,26 @@ async def create_job_upload(
     t.start()
 
     return {"id": job_id}
+
+
+def _job_config(job: Job) -> Dict[str, Any]:
+    """Extract the config/settings used for this job."""
+    req = job.original_req
+    if not req:
+        return {}
+    tts = "Chatterbox" if req.use_chatterbox else "ElevenLabs" if req.use_elevenlabs else "Coqui XTTS" if req.use_coqui_xtts else "Google TTS" if req.use_google_tts else "Edge-TTS" if req.use_edge_tts else "Edge-TTS"
+    engine_labels = {
+        "auto": "Auto", "gemini": "Gemini", "groq": "Groq",
+        "ollama": "Ollama", "google": "Google Translate", "hinglish": "Hinglish AI",
+    }
+    return {
+        "asr_model": getattr(req, "asr_model", "large-v3"),
+        "translation_engine": engine_labels.get(getattr(req, "translation_engine", "auto"), "Auto"),
+        "tts_engine": tts,
+        "audio_priority": getattr(req, "audio_priority", False),
+        "audio_bitrate": getattr(req, "audio_bitrate", "192k"),
+        "encode_preset": getattr(req, "encode_preset", "veryfast"),
+    }
 
 
 @app.get("/api/jobs/{job_id}")
@@ -346,6 +386,7 @@ def get_job(job_id: str):
         "video_title": job.video_title,
         "target_language": job.target_language,
         "created_at": job.created_at,
+        "config": _job_config(job),
     }
 
 
