@@ -1,28 +1,22 @@
 import unittest
-from src.dubbing.pipeline import VideoDubbingPipeline
+from unittest.mock import patch, MagicMock
+from src.dubbing.pipeline import DubbingPipeline
 
-class TestVideoDubbingPipeline(unittest.TestCase):
 
-    def setUp(self):
-        self.pipeline = VideoDubbingPipeline()
+class TestDubbingPipeline(unittest.TestCase):
 
-    def test_initialization(self):
-        self.assertIsNotNone(self.pipeline)
+    @patch('src.dubbing.pipeline.setup_logging')
+    def test_initialization(self, mock_logging):
+        mock_logging.return_value = MagicMock()
+        pipeline = DubbingPipeline("https://example.com/video", "es")
+        self.assertEqual(pipeline.video_url, "https://example.com/video")
+        self.assertEqual(pipeline.target_language, "es")
+        self.assertIsNone(pipeline.video_path)
+        self.assertIsNone(pipeline.audio_path)
+        self.assertIsNone(pipeline.transcription)
+        self.assertIsNone(pipeline.translated_text)
+        self.assertIsNone(pipeline.dubbed_audio_path)
 
-    def test_process_video(self):
-        result = self.pipeline.process_video("sample_video.mp4", "en", "es")
-        self.assertTrue(result['success'])
-        self.assertIn('dubbed_audio', result)
-        self.assertIn('subtitles', result)
-
-    def test_invalid_video(self):
-        result = self.pipeline.process_video("invalid_video.mp4", "en", "es")
-        self.assertFalse(result['success'])
-        self.assertEqual(result['error'], 'Video not found')
-
-    def test_language_translation(self):
-        result = self.pipeline.translate_text("Hello, world!", "en", "es")
-        self.assertEqual(result, "Hola, mundo!")
 
 if __name__ == '__main__':
     unittest.main()

@@ -5,12 +5,42 @@ def create_srt_subtitle(content, output_file):
             f.write(f"{format_time(start)} --> {format_time(end)}\n")
             f.write(f"{text}\n\n")
 
-def format_time(seconds):
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    seconds = int(seconds % 60)
-    milliseconds = int((seconds - int(seconds)) * 1000)
-    return f"{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}"
+def format_time(total_seconds):
+    hours = int(total_seconds // 3600)
+    minutes = int((total_seconds % 3600) // 60)
+    secs = int(total_seconds % 60)
+    milliseconds = int(round((total_seconds - int(total_seconds)) * 1000))
+    return f"{hours:02}:{minutes:02}:{secs:02},{milliseconds:03}"
+
+
+def create_srt(subtitles):
+    result = ""
+    for index, (start, end, text) in enumerate(subtitles):
+        result += f"{index + 1}\n"
+        result += f"{format_time(start)} --> {format_time(end)}\n"
+        result += f"{text}\n\n"
+    return result
+
+
+def parse_srt(srt_content):
+    subtitles = []
+    lines = srt_content.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        if line.isdigit():
+            index += 1
+            time_line = lines[index].strip()
+            start, end = time_line.split(' --> ')
+            start = convert_time_to_seconds(start)
+            end = convert_time_to_seconds(end)
+            index += 1
+            text = lines[index].strip()
+            subtitles.append((start, end, text))
+            index += 1
+        else:
+            index += 1
+    return subtitles
 
 def parse_srt_file(file_path):
     subtitles = []
