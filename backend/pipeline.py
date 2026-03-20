@@ -221,8 +221,11 @@ class PipelineConfig:
     prefer_youtube_subs: bool = False
     multi_speaker: bool = False
     transcribe_only: bool = False
+    # Audio priority: let TTS speak at natural pace, video freezes/extends to match
     audio_priority: bool = False
+    # Audio quality: bitrate for final output (128k, 192k, 256k, 320k)
     audio_bitrate: str = "192k"
+    # Video encode speed: ultrafast (fastest), veryfast, fast, medium (best quality)
     encode_preset: str = "veryfast"
 
 
@@ -678,14 +681,16 @@ class Pipeline:
                      f"All {len(tts_data)} segments at 1.25x speed")
 
         # Step 6: Assemble — AUDIO IS MASTER, video adapts
-        # TTS plays at natural speed (uniform, no speedup/slowdown).
-        # Video is slowed (max 1.1x) and scenes are looped to match audio duration.
-        self._report("assemble", 0.0, "Building dubbed output (video adapts to audio)...")
+        self._report("assemble", 0.0, "Building dubbed output...")
         self.cfg.output_path.parent.mkdir(parents=True, exist_ok=True)
         video_duration = self._get_duration(video_path)
 
-        self._report("assemble", 0.1, "Assembling: video will adapt to match natural audio...")
-        self._assemble_video_adapts_to_audio(video_path, audio_raw, tts_data, video_duration)
+        if self.cfg.audio_priority:
+            self._report("assemble", 0.05, "Fast assembly: audio priority mode (stream copy)...")
+            self._assemble_fast_mux(video_path, audio_raw, tts_data, video_duration)
+        else:
+            self._report("assemble", 0.1, "Assembling: video will adapt to match natural audio...")
+            self._assemble_video_adapts_to_audio(video_path, audio_raw, tts_data, video_duration)
 
         # Copy SRT to output
         out_srt = self.cfg.output_path.parent / f"subtitles_{self.cfg.target_language}.srt"
@@ -786,12 +791,16 @@ class Pipeline:
                      f"All {len(tts_data)} segments at 1.25x speed")
 
         # Step 6: Assemble
-        self._report("assemble", 0.0, "Building dubbed output (video adapts to audio)...")
+        self._report("assemble", 0.0, "Building dubbed output...")
         self.cfg.output_path.parent.mkdir(parents=True, exist_ok=True)
         video_duration = self._get_duration(video_path)
 
-        self._report("assemble", 0.1, "Assembling: video will adapt to match natural audio...")
-        self._assemble_video_adapts_to_audio(video_path, audio_raw, tts_data, video_duration)
+        if self.cfg.audio_priority:
+            self._report("assemble", 0.05, "Fast assembly: audio priority mode (stream copy)...")
+            self._assemble_fast_mux(video_path, audio_raw, tts_data, video_duration)
+        else:
+            self._report("assemble", 0.1, "Assembling: video will adapt to match natural audio...")
+            self._assemble_video_adapts_to_audio(video_path, audio_raw, tts_data, video_duration)
 
         # Copy SRT to output
         out_srt = self.cfg.output_path.parent / f"subtitles_{self.cfg.target_language}.srt"
@@ -1113,13 +1122,35 @@ class Pipeline:
 
         gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
         groq_key = os.environ.get("GROQ_API_KEY", "").strip()
-        if gemini_key:
+        engine = self.cfg.translation_engine
+
+        # If a specific engine is selected, use it directly
+        if engine == "hinglish" and self._ollama_available():
+            self._report("translate", 0.25, "Using Hinglish AI (custom Ollama model)...")
+            translated_text = self._translate_with_ollama(full_text, speech_duration, force_model="hinglish-translator")
+        elif engine == "gemini" and gemini_key:
+            self._report("translate", 0.25, "Using Gemini for translation...")
+            translated_text = self._translate_with_gemini(full_text, gemini_key, speech_duration)
+        elif engine == "groq" and groq_key:
+            self._report("translate", 0.25, "Using Groq (Llama 3.3 70B) for translation...")
+            translated_text = self._translate_with_groq(full_text, groq_key, speech_duration)
+        elif engine == "ollama" and self._ollama_available():
+            self._report("translate", 0.25, "Using Ollama (local LLM) for translation...")
+            translated_text = self._translate_with_ollama(full_text, speech_duration)
+        elif engine == "google":
+            self._report("translate", 0.25, "Using Google Translate...")
+            translated_text = self._translate_with_google(full_text)
+        # Auto mode: try best available
+        elif gemini_key:
             translated_text = self._translate_with_gemini(full_text, gemini_key, speech_duration)
         elif groq_key:
             self._report("translate", 0.25, "Using Groq (Llama 3.3 70B) for translation...")
             translated_text = self._translate_with_groq(full_text, groq_key, speech_duration)
+        elif self._ollama_available():
+            self._report("translate", 0.25, "Using Ollama (local LLM) for translation...")
+            translated_text = self._translate_with_ollama(full_text, speech_duration)
         else:
-            self._report("translate", 0.25, "No GEMINI/GROQ API key found, using Google Translate...")
+            self._report("translate", 0.25, "No GEMINI/GROQ/Ollama found, using Google Translate...")
             translated_text = self._translate_with_google(full_text)
 
         return full_text, translated_text
@@ -1163,13 +1194,11 @@ class Pipeline:
                 )
 
             prompt = (
-                f"Translate the following narration from {source_name} into natural, fluent {target_name}. "
-                f"This is a voiceover script for a dubbed video, so it must sound like a native "
-                f"{target_name} speaker is narrating — conversational, smooth, and natural. "
+                self._get_translation_prompt("system") + "\n\n"
+                f"This is a voiceover script for a dubbed video. "
                 f"{duration_hint}{chunk_hint}"
-                f"Do NOT translate literally word-by-word. Adapt idioms and phrasing to sound "
-                f"natural in {target_name}. Keep proper nouns (names, places, brands) as-is. "
-                f"Output ONLY the {target_name} translation, nothing else.\n\n"
+                f"Do NOT translate literally word-by-word. Adapt idioms and phrasing naturally. "
+                f"Output ONLY the translation, nothing else.\n\n"
                 f"{chunk}"
             )
 
@@ -1224,13 +1253,11 @@ class Pipeline:
 
         for i, chunk in enumerate(chunks):
             prompt = (
-                f"Translate the following narration from {source_name} into natural, fluent {target_name}. "
-                f"This is a voiceover script for a dubbed video, so it must sound like a native "
-                f"{target_name} speaker is narrating — conversational, smooth, and natural. "
+                self._get_translation_prompt("system") + "\n\n"
+                f"This is a voiceover script for a dubbed video. "
                 f"{duration_hint}"
-                f"Do NOT translate literally word-by-word. Adapt idioms and phrasing to sound "
-                f"natural in {target_name}. Keep proper nouns (names, places, brands) as-is. "
-                f"Output ONLY the {target_name} translation, nothing else.\n\n"
+                f"Do NOT translate literally word-by-word. Adapt idioms and phrasing naturally. "
+                f"Output ONLY the translation, nothing else.\n\n"
                 f"{chunk}"
             )
 
@@ -1261,6 +1288,99 @@ class Pipeline:
 
             self._report("translate", 0.2 + 0.8 * ((i + 1) / len(chunks)),
                          f"Translated chunk {i + 1}/{len(chunks)} (Groq)")
+
+        return " ".join(translated_parts)
+
+    def _ollama_available(self) -> bool:
+        """Check if Ollama is running locally."""
+        import requests as _requests
+        try:
+            resp = _requests.get("http://localhost:11434/api/tags", timeout=2)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    def _translate_with_ollama(self, full_text: str, speech_duration: float = 0, force_model: str = "") -> str:
+        """Translate using local Ollama LLM."""
+        import requests as _requests
+
+        target_name = LANGUAGE_NAMES.get(self.cfg.target_language, self.cfg.target_language)
+
+        # Pick the best available model
+        try:
+            resp = _requests.get("http://localhost:11434/api/tags", timeout=5)
+            models = [m["name"] for m in resp.json().get("models", [])]
+        except Exception:
+            models = []
+
+        # If a specific model is requested, use it
+        if force_model:
+            model = force_model if any(force_model in m for m in models) else None
+            if not model:
+                self._report("translate", 0.25, f"Model '{force_model}' not found in Ollama, falling back...")
+                # Try auto-pick instead
+                force_model = ""
+
+        if not force_model:
+            # Prefer custom hinglish-translator for Hindi, else pick best available
+            preferred = (
+                ["hinglish-translator"] if self.cfg.target_language in ("hi", "hi-IN")
+                else []
+            ) + ["qwen2.5:14b", "qwen2.5:32b", "llama3.1:8b", "llama3:8b", "gemma2:9b", "mistral:7b"]
+            model = None
+            for pref in preferred:
+                for m in models:
+                    if pref.split(":")[0] in m:
+                        model = m
+                        break
+                if model:
+                    break
+            if not model and models:
+                model = models[0]
+        if not model:
+            self._report("translate", 0.25, "No Ollama models found, falling back to Google Translate...")
+            return self._translate_with_google(full_text)
+
+        self._report("translate", 0.25, f"Using Ollama model: {model}")
+
+        word_count = len(full_text.split())
+        duration_hint = ""
+        if speech_duration > 0:
+            wpm = LANGUAGE_WPM.get(self.cfg.target_language, 135)
+            target_words = int(speech_duration / 60 * wpm)
+            duration_hint = (
+                f"IMPORTANT TIMING CONSTRAINT: The original narration is {int(speech_duration)} seconds long "
+                f"({word_count} words). Aim for approximately {target_words} {target_name} words. "
+                f"Be concise — use shorter phrases where possible without losing meaning. "
+            )
+
+        chunks = self._split_text_for_translation(full_text, max_chars=4000)
+        translated_parts = []
+
+        for i, chunk in enumerate(chunks):
+            prompt = (
+                self._get_translation_prompt("system") + "\n\n"
+                f"This is a voiceover script for a dubbed video. "
+                f"{duration_hint}"
+                f"Do NOT translate literally word-by-word. Adapt idioms and phrasing naturally. "
+                f"Output ONLY the translation, nothing else.\n\n"
+                f"{chunk}"
+            )
+
+            try:
+                resp = _requests.post(
+                    "http://localhost:11434/api/generate",
+                    json={"model": model, "prompt": prompt, "stream": False},
+                    timeout=120,
+                )
+                data = resp.json()
+                translated_parts.append(data.get("response", "").strip())
+            except Exception as e:
+                self._report("translate", 0.2, f"Ollama failed: {e}, falling back to Google Translate...")
+                return self._translate_with_google(full_text)
+
+            self._report("translate", 0.2 + 0.8 * ((i + 1) / len(chunks)),
+                         f"Translated chunk {i + 1}/{len(chunks)} (Ollama: {model})")
 
         return " ".join(translated_parts)
 
@@ -1319,6 +1439,86 @@ class Pipeline:
         wpm = LANGUAGE_WPM.get(target_language, 135)
         return max(1, round((duration_seconds / 60.0) * wpm))
 
+    def _get_translation_prompt(self, mode: str = "system") -> str:
+        """Build the translation system/user prompt based on target language.
+
+        For Hindi: uses a detailed natural-spoken-Hindi prompt.
+        For other languages: uses a generic colloquial prompt.
+        mode: 'system' for system message, 'user_prefix' for user message intro.
+        """
+        target_name = LANGUAGE_NAMES.get(self.cfg.target_language, self.cfg.target_language)
+        source_name = LANGUAGE_NAMES.get(self.cfg.source_language, "the source language") if self.cfg.source_language != "auto" else "the detected language"
+        is_hindi = self.cfg.target_language in ("hi", "hi-IN")
+
+        if mode == "system":
+            if is_hindi:
+                return (
+                    "You are a professional dubbing translator and Hindi dialogue writer.\n\n"
+                    "Translate the given English text into natural, everyday spoken Hindi.\n\n"
+                    "IMPORTANT RULES:\n"
+                    "1. Translate into natural Hindi the way educated Indian speakers talk in real life.\n"
+                    "2. Do NOT use overly formal, bookish, or shuddh Hindi.\n"
+                    "3. Do NOT use awkward literal translation.\n"
+                    "4. Make it sound smooth, emotional, and human.\n"
+                    "5. Keep the tone of the original — dramatic where dramatic, funny where funny, "
+                    "casual where casual, emotional where emotional.\n"
+                    "6. Use short, speakable sentences suitable for dubbing.\n"
+                    "7. Keep proper nouns, brand names, place names, and technical terms in English "
+                    "unless a natural Hindi version is clearly better.\n"
+                    "8. Each line should feel like natural spoken Hindi, not translation-Hindi.\n"
+                    "9. Avoid unnatural formal words like: अतः, किन्तु, तथापि, उक्त, यद्यपि, अपितु, "
+                    "एवं (use और), तदनुसार, अभिप्राय. These sound robotic in speech.\n"
+                    "10. Prefer everyday natural wording like:\n"
+                    "   - 'क्या कर रहे हो?' not 'आप क्या कर रहे हैं?'\n"
+                    "   - 'अब क्या होगा?' not 'अब क्या घटित होगा?'\n"
+                    "   - 'मुझे नहीं पता' not 'मुझे ज्ञात नहीं है'\n"
+                    "   - 'वो सच में पागल है' not 'वह वास्तव में विक्षिप्त है'\n"
+                    "   - 'ये तो बहुत crazy है यार' not 'यह अत्यंत विचित्र है'\n"
+                    "11. Keep common English words that Indians naturally mix in: actually, basically, "
+                    "problem, phone, video, use, point, so, but, right, like, channel, subscribe, "
+                    "technology, project, amazing, really, seriously, obviously.\n"
+                    "12. Use natural Hindi fillers and connectors: यार, भाई, ना, तो, basically, "
+                    "actually, मतलब, बोलो तो, देखो, सुनो, अरे.\n"
+                    "13. Match speaking length closely to the original — don't over-expand.\n\n"
+                    "STYLE TARGET: Natural Indian spoken Hindi, smooth and emotional, like a real "
+                    "person speaking. NOT like a news anchor or textbook. Think popular Hindi YouTube "
+                    "channels and everyday conversation.\n\n"
+                    "Do not make it sound translated. Make it sound like original Hindi speech.\n\n"
+                    "COMPLETENESS: Translate EVERY word and idea. NOTHING may be skipped or summarized.\n"
+                    "Output ONLY numbered translations, one per line, matching input numbering.\n"
+                    "Do NOT add notes, comments, explanations, or metadata."
+                )
+            else:
+                return (
+                    f"You are a world-class dubbing translator. Make {target_name} sound like it was ORIGINALLY "
+                    f"written by a native speaker — a real person talking, not a textbook.\n"
+                    f"Sound like a YouTuber, podcast host, or friend explaining something. "
+                    f"Use the EXACT way native speakers ACTUALLY talk in everyday life. "
+                    f"Keep English words people naturally mix in: 'actually', 'basically', 'problem', 'phone', 'video', 'so', 'but'. "
+                    f"NEVER use formal/literary/textbook language. "
+                    f"Match the speaker's energy and emotion exactly. "
+                    f"Keep proper nouns, brands, and technical terms unchanged.\n\n"
+                    f"COMPLETENESS: Translate EVERY word and idea. NOTHING may be skipped. "
+                    f"Each translation must be COMPLETE. Video adapts to audio — don't worry about length. "
+                    f"Output ONLY numbered translations. No notes or metadata."
+                )
+
+        elif mode == "user_prefix":
+            if is_hindi:
+                return (
+                    f"Translate each numbered line from {source_name} to natural spoken Hindi. "
+                    f"Make every line sound like real dialogue — not translated text. "
+                    f"Use everyday Hindi with natural English mixing. Translate COMPLETELY.\n\n"
+                )
+            else:
+                return (
+                    f"Translate each line from {source_name} to {target_name}. "
+                    f"Natural, conversational, the way real people actually talk — like a friend explaining something. "
+                    f"Translate COMPLETELY — every idea, every nuance.\n\n"
+                )
+
+        return ""
+
     # ── Step 4b: Segment-level translation ────────────────────────────────
     def _translate_segments(self, segments):
         """Translate each segment individually, preserving timestamps for sync.
@@ -1375,9 +1575,6 @@ class Pipeline:
         from google import genai
         client = genai.Client(api_key=api_key)
 
-        target_name = LANGUAGE_NAMES.get(self.cfg.target_language, self.cfg.target_language)
-        source_name = LANGUAGE_NAMES.get(self.cfg.source_language, "the source language") if self.cfg.source_language != "auto" else "the detected language"
-
         batch_size = 30
         total_batches = (len(segments) + batch_size - 1) // batch_size
 
@@ -1386,34 +1583,10 @@ class Pipeline:
             end = min(start + batch_size, len(segments))
             batch = segments[start:end]
 
-            # Build numbered input
-            lines = []
-            for i, seg in enumerate(batch):
-                lines.append(f"{i+1}. {seg['text']}")
-
+            lines = [f"{i+1}. {seg['text']}" for i, seg in enumerate(batch)]
             prompt = (
-                f"You are a world-class dubbing translator. Your ONE job: make {target_name} translations "
-                f"sound like they were ORIGINALLY written in {target_name} by a native speaker.\n\n"
-                f"Translate each numbered line from {source_name} to {target_name}.\n\n"
-                f"VOICE & STYLE (THE #1 PRIORITY):\n"
-                f"- Sound like a REAL PERSON talking — a friend explaining something, a YouTuber narrating, "
-                f"a podcast host telling a story. NOT a textbook, NOT a news anchor, NOT a robot.\n"
-                f"- Use the EXACT way native speakers ACTUALLY talk in everyday life.\n"
-                f"  - Hindi example: 'toh basically yeh cheez hai ki...' NOT 'yah vastu yah hai ki...'\n"
-                f"  - Bengali example: 'mane hocche ta holo...' NOT 'arthat etar tatparya holo...'\n"
-                f"- Keep English words that people naturally use: 'actually', 'problem', 'basically', "
-                f"'phone', 'video', 'use', 'point', 'so', 'but', 'right?', 'like' etc.\n"
-                f"- Use contractions, filler words, and sentence connectors that real people use.\n"
-                f"- Match the speaker's ENERGY and EMOTION exactly — excited = excited, sarcastic = sarcastic.\n"
-                f"- NEVER use formal/literary/textbook language. NEVER use shudh Hindi or sadhu Bengali.\n"
-                f"- Keep proper nouns, brand names, and technical terms unchanged.\n\n"
-                f"TRANSLATION COMPLETENESS (ABSOLUTELY CRITICAL):\n"
-                f"- Translate EVERY word and EVERY idea. NOTHING may be skipped or summarized.\n"
-                f"- Each line must be COMPLETE — no truncation, no cutting, no paraphrasing that loses detail.\n"
-                f"- The video will adapt to match audio length — so DO NOT worry about translation length.\n"
-                f"- Longer translations are fine. Incomplete translations are UNACCEPTABLE.\n\n"
-                f"Output ONLY the numbered {target_name} translations, one per line, matching input numbering.\n"
-                f"Do NOT add notes, comments, explanations, or metadata.\n\n"
+                self._get_translation_prompt("system") + "\n\n"
+                + self._get_translation_prompt("user_prefix")
                 + "\n".join(lines)
             )
 
@@ -1448,41 +1621,17 @@ class Pipeline:
         from groq import Groq
         client = Groq(api_key=api_key)
 
-        target_name = LANGUAGE_NAMES.get(self.cfg.target_language, self.cfg.target_language)
-        source_name = LANGUAGE_NAMES.get(self.cfg.source_language, "the source language") if self.cfg.source_language != "auto" else "the detected language"
-
         batch_size = 30
         total_batches = (len(segments) + batch_size - 1) // batch_size
-
-        system_msg = (
-            f"You are a world-class dubbing translator. Make {target_name} sound like it was ORIGINALLY "
-            f"written by a native speaker — a real person talking, not a textbook.\n"
-            f"Sound like a YouTuber, podcast host, or friend explaining something. "
-            f"Use the EXACT way native speakers talk in everyday life. "
-            f"Keep English words people naturally mix in: 'actually', 'basically', 'problem', 'phone', 'video', 'so', 'but'. "
-            f"NEVER use formal/literary/textbook language. NO shudh Hindi, NO sadhu Bengali. "
-            f"Match the speaker's energy and emotion exactly. "
-            f"Keep proper nouns, brands, and technical terms unchanged.\n\n"
-            f"COMPLETENESS: Translate EVERY word and idea. NOTHING may be skipped. "
-            f"Each translation must be COMPLETE. Video adapts to audio — don't worry about length. "
-            f"Output ONLY numbered translations. No notes or metadata."
-        )
+        system_msg = self._get_translation_prompt("system")
 
         for batch_idx in range(total_batches):
             start = batch_idx * batch_size
             end = min(start + batch_size, len(segments))
             batch = segments[start:end]
 
-            lines = []
-            for i, seg in enumerate(batch):
-                lines.append(f"{i+1}. {seg['text']}")
-
-            user_msg = (
-                f"Translate each line from {source_name} to {target_name}. "
-                f"Natural, conversational, the way real people actually talk — like a friend explaining something. "
-                f"Translate COMPLETELY — every idea, every nuance. Video adapts to audio length.\n\n"
-                + "\n".join(lines)
-            )
+            lines = [f"{i+1}. {seg['text']}" for i, seg in enumerate(batch)]
+            user_msg = self._get_translation_prompt("user_prefix") + "\n".join(lines)
 
             retries = 3
             success = False
@@ -1558,18 +1707,7 @@ class Pipeline:
         batch_size = 15  # Smaller batches for local LLM
         total_batches = (len(segments) + batch_size - 1) // batch_size
 
-        system_msg = (
-            f"You are a world-class dubbing translator. Make {target_name} sound like it was ORIGINALLY "
-            f"written by a native speaker — a real person talking, not a textbook.\n"
-            f"Sound like a YouTuber, podcast host, or friend explaining something. "
-            f"Use the EXACT way native speakers talk in everyday life. "
-            f"Keep English words people naturally mix in: 'actually', 'basically', 'problem', 'phone', 'video', 'so', 'but'. "
-            f"NEVER use formal/literary/textbook language. NO shudh Hindi, NO sadhu Bengali. "
-            f"Match the speaker's energy and emotion exactly. "
-            f"Keep proper nouns, brands, and technical terms unchanged.\n\n"
-            f"COMPLETENESS: Translate EVERY word and idea. NOTHING may be skipped. "
-            f"Output ONLY numbered translations. No notes or metadata."
-        )
+        system_msg = self._get_translation_prompt("system")
 
         for batch_idx in range(total_batches):
             start = batch_idx * batch_size
@@ -1577,11 +1715,7 @@ class Pipeline:
             batch = segments[start:end]
 
             lines = [f"{i+1}. {seg['text']}" for i, seg in enumerate(batch)]
-            user_msg = (
-                f"Translate each line from {source_name} to {target_name}. "
-                f"Natural, conversational, the way real people actually talk.\n\n"
-                + "\n".join(lines)
-            )
+            user_msg = self._get_translation_prompt("user_prefix") + "\n".join(lines)
 
             try:
                 resp = _requests.post("http://localhost:11434/api/chat", json={
@@ -1610,41 +1744,17 @@ class Pipeline:
         from openai import OpenAI
         client = OpenAI(api_key=api_key)
 
-        target_name = LANGUAGE_NAMES.get(self.cfg.target_language, self.cfg.target_language)
-        source_name = LANGUAGE_NAMES.get(self.cfg.source_language, "the source language") if self.cfg.source_language != "auto" else "the detected language"
-
         batch_size = 30
         total_batches = (len(segments) + batch_size - 1) // batch_size
-
-        system_msg = (
-            f"You are a world-class dubbing translator. Make {target_name} sound like it was ORIGINALLY "
-            f"written by a native speaker — a real person talking, not a textbook.\n"
-            f"Sound like a YouTuber, podcast host, or friend explaining something. "
-            f"Use the EXACT way native speakers talk in everyday life. "
-            f"Keep English words people naturally mix in: 'actually', 'basically', 'problem', 'phone', 'video', 'so', 'but'. "
-            f"NEVER use formal/literary/textbook language. NO shudh Hindi, NO sadhu Bengali. "
-            f"Match the speaker's energy and emotion exactly. "
-            f"Keep proper nouns, brands, and technical terms unchanged.\n\n"
-            f"COMPLETENESS: Translate EVERY word and idea. NOTHING may be skipped. "
-            f"Each translation must be COMPLETE. Video adapts to audio — don't worry about length. "
-            f"Output ONLY numbered translations. No notes or metadata."
-        )
+        system_msg = self._get_translation_prompt("system")
 
         for batch_idx in range(total_batches):
             start = batch_idx * batch_size
             end = min(start + batch_size, len(segments))
             batch = segments[start:end]
 
-            lines = []
-            for i, seg in enumerate(batch):
-                lines.append(f"{i+1}. {seg['text']}")
-
-            user_msg = (
-                f"Translate from {source_name} to {target_name}. "
-                f"Natural, conversational, the way real people actually talk — like a friend explaining something. "
-                f"Translate COMPLETELY — every idea, every nuance. Video adapts to audio length.\n\n"
-                + "\n".join(lines)
-            )
+            lines = [f"{i+1}. {seg['text']}" for i, seg in enumerate(batch)]
+            user_msg = self._get_translation_prompt("user_prefix") + "\n".join(lines)
 
             retries = 3
             success = False
@@ -1857,7 +1967,14 @@ class Pipeline:
         - If TTS is longer than slot → speed up up to 1.25x (SPEED_MAX atempo)
         - NEVER cut or truncate audio — all speech must be heard completely
         - If TTS still doesn't fit after max speed-up, let it overflow into the gap
+
+        Audio Priority mode: NO speed adjustment — TTS plays at natural pace always.
+        Video will be adjusted to match audio instead.
         """
+        # Audio Priority: skip all speed adjustments, let audio play naturally
+        if self.cfg.audio_priority:
+            return [tts.copy() for tts in tts_data]
+
         fitted = []
         for idx, tts in enumerate(tts_data):
             seg_start = tts["start"]
@@ -2061,7 +2178,7 @@ class Pipeline:
                      "-ss", f"{vs:.3f}", "-i", str(video_path),
                      "-t", f"{dur:.3f}",
                      "-an",
-                     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                     "-c:v", "libx264", "-preset", self.cfg.encode_preset, "-crf", "20",
                      str(clip)],
                     check=True, capture_output=True,
                 )
@@ -2080,7 +2197,7 @@ class Pipeline:
                              "-ss", f"{vs:.3f}", "-i", str(video_path),
                              "-t", f"{dur:.3f}",
                              "-an",
-                             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                             "-c:v", "libx264", "-preset", self.cfg.encode_preset, "-crf", "20",
                              str(clip)],
                             check=True, capture_output=True,
                         )
@@ -2091,7 +2208,7 @@ class Pipeline:
                              "-t", f"{dur:.3f}",
                              "-filter:v", f"setpts={pts_factor:.6f}*PTS",
                              "-an",
-                             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                             "-c:v", "libx264", "-preset", self.cfg.encode_preset, "-crf", "20",
                              str(clip)],
                             check=True, capture_output=True,
                         )
@@ -2110,7 +2227,7 @@ class Pipeline:
                          "-t", f"{dur:.3f}",
                          "-filter:v", f"setpts={self.VIDEO_SLOW_MAX:.6f}*PTS",
                          "-an",
-                         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                         "-c:v", "libx264", "-preset", self.cfg.encode_preset, "-crf", "20",
                          str(slowed_clip)],
                         check=True, capture_output=True,
                     )
@@ -2156,7 +2273,7 @@ class Pipeline:
                              "-loop", "1", "-i", str(last_frame),
                              "-t", f"{freeze_dur:.3f}",
                              "-vf", "fps=30",
-                             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                             "-c:v", "libx264", "-preset", self.cfg.encode_preset, "-crf", "20",
                              "-pix_fmt", "yuv420p",
                              str(freeze_clip)],
                             check=True, capture_output=True,
@@ -2171,7 +2288,7 @@ class Pipeline:
                             [self._ffmpeg, "-y",
                              "-f", "concat", "-safe", "0",
                              "-i", str(concat_list),
-                             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                             "-c:v", "libx264", "-preset", self.cfg.encode_preset, "-crf", "20",
                              str(clip)],
                             check=True, capture_output=True,
                         )
@@ -2679,34 +2796,48 @@ class Pipeline:
     def _tts_edge(self, segments, voice_map=None):
         """Generate TTS using edge-tts (free Microsoft voices).
         If voice_map is provided, each segment uses its speaker's assigned voice.
+        Uses parallel processing for speed — 20 segments at once.
         """
         import edge_tts
         default_voice = self.cfg.tts_voice
         rate = self.cfg.tts_rate
+        concurrency = 20  # Process 20 segments simultaneously
 
-        async def generate():
-            for i, seg in enumerate(segments):
-                text = seg.get("text_translated", seg.get("text", "")).strip()
-                if not text:
-                    continue
-                # Pick voice: per-speaker if multi-speaker, else default
-                seg_voice = default_voice
-                if voice_map and "speaker_id" in seg:
-                    seg_voice = voice_map.get(seg["speaker_id"], default_voice)
-                mp3 = self.cfg.work_dir / f"tts_{i:04d}.mp3"
+        async def generate_one(i, seg, semaphore):
+            text = seg.get("text_translated", seg.get("text", "")).strip()
+            if not text:
+                return
+            seg_voice = default_voice
+            if voice_map and "speaker_id" in seg:
+                seg_voice = voice_map.get(seg["speaker_id"], default_voice)
+            mp3 = self.cfg.work_dir / f"tts_{i:04d}.mp3"
+            async with semaphore:
                 try:
                     comm = edge_tts.Communicate(text, seg_voice, rate=rate)
                     await comm.save(str(mp3))
                     seg["_tts_mp3"] = mp3
                 except Exception:
                     pass
+
+        async def generate_all():
+            semaphore = asyncio.Semaphore(concurrency)
+            total = len(segments)
+            tasks = []
+            for i, seg in enumerate(segments):
+                tasks.append(generate_one(i, seg, semaphore))
+            # Process in batches and report progress
+            batch_size = concurrency
+            for batch_start in range(0, len(tasks), batch_size):
+                batch = tasks[batch_start:batch_start + batch_size]
+                await asyncio.gather(*batch)
+                done = min(batch_start + batch_size, total)
                 self._report(
                     "synthesize",
-                    0.1 + 0.8 * ((i + 1) / len(segments)),
-                    f"Synthesized {i + 1}/{len(segments)} segments ({seg_voice})...",
+                    0.1 + 0.8 * (done / total),
+                    f"Synthesized {done}/{total} segments (parallel x{concurrency})...",
                 )
 
-        asyncio.run(generate())
+        asyncio.run(generate_all())
 
         tts_data = []
         for i, seg in enumerate(segments):
@@ -2875,7 +3006,7 @@ class Pipeline:
                      "-ss", f"{vs:.3f}", "-i", str(video_path),
                      "-t", f"{dur:.3f}",
                      "-an",
-                     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                     "-c:v", "libx264", "-preset", self.cfg.encode_preset, "-crf", "20",
                      str(clip)],
                     check=True, capture_output=True,
                 )
@@ -2888,7 +3019,7 @@ class Pipeline:
                      "-t", f"{dur:.3f}",
                      "-filter:v", f"setpts={pts_factor:.6f}*PTS",
                      "-an",
-                     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                     "-c:v", "libx264", "-preset", self.cfg.encode_preset, "-crf", "20",
                      str(clip)],
                     check=True, capture_output=True,
                 )
@@ -3104,6 +3235,47 @@ class Pipeline:
             check=True, capture_output=True,
         )
 
+    # ── Fast assembly: build audio timeline + stream-copy video ────────
+    def _assemble_fast_mux(self, video_path, audio_raw, tts_data, total_video_duration):
+        """Ultra-fast assembly for long videos: build full audio, mux with original video.
+
+        No per-segment video re-encoding. Just:
+        1. Build the complete dubbed audio timeline (TTS segments placed at correct times)
+        2. Optionally mix with original background audio
+        3. Stream-copy the video and replace audio track → instant mux
+        """
+        num_segs = len(tts_data)
+        self._report("assemble", 0.05, f"Building audio timeline for {num_segs} segments...")
+
+        # Speed-fit TTS to their time slots
+        fitted = self._speed_fit_segments(tts_data)
+
+        # Build the dubbed audio timeline
+        self._report("assemble", 0.2, "Placing audio segments on timeline...")
+        dubbed_audio = self._build_timeline_no_cut(fitted, total_video_duration, prefix="fast_")
+
+        # Mix with original audio if requested
+        if self.cfg.mix_original and audio_raw and audio_raw.exists():
+            self._report("assemble", 0.6, "Mixing with original audio...")
+            mixed_audio = self.cfg.work_dir / "fast_mixed.wav"
+            vol = self.cfg.original_volume
+            subprocess.run(
+                [self._ffmpeg, "-y",
+                 "-i", str(dubbed_audio),
+                 "-i", str(audio_raw),
+                 "-filter_complex",
+                 f"[1:a]volume={vol}[bg];[0:a][bg]amix=inputs=2:duration=longest",
+                 "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
+                 str(mixed_audio)],
+                check=True, capture_output=True,
+            )
+            dubbed_audio = mixed_audio
+
+        # Stream-copy video + replace audio (NO re-encode = instant)
+        self._report("assemble", 0.8, "Muxing audio with video (stream copy — fast)...")
+        self._mux_replace_audio(video_path, dubbed_audio, self.cfg.output_path)
+        self._report("assemble", 0.95, "Fast assembly complete!")
+
     # ── Video muxing ─────────────────────────────────────────────────────
     def _mux_replace_audio(self, video_path: Path, audio_path: Path, output_path: Path):
         subprocess.run(
@@ -3112,7 +3284,7 @@ class Pipeline:
                 "-i", str(video_path),
                 "-i", str(audio_path),
                 "-c:v", "copy",
-                "-c:a", "aac", "-b:a", "192k",
+                "-c:a", "aac", "-b:a", self.cfg.audio_bitrate,
                 "-map", "0:v:0",
                 "-map", "1:a:0",
                 str(output_path),
