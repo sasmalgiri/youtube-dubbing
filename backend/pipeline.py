@@ -1868,7 +1868,7 @@ class Pipeline:
                             {"role": "user", "content": user_msg},
                         ],
                         temperature=0.7,
-                        max_tokens=4096,
+                        max_tokens=8192,
                     )
                     result_text = response.choices[0].message.content
                     translations = self._parse_numbered_translations(result_text, len(batch))
@@ -1910,7 +1910,7 @@ class Pipeline:
                             {"role": "user", "content": user_msg},
                         ],
                         "temperature": 0.7,
-                        "max_tokens": 4096,
+                        "max_tokens": 8192,
                     },
                     timeout=60,
                 )
@@ -2653,7 +2653,10 @@ class Pipeline:
         self._report("assemble", 0.80, "Building audio timeline...")
         audio_timeline_pos = 0.0
         audio_segments = []
+        produced_sections = set(clip_section_indices)
         for idx, sec in enumerate(sections):
+            if idx not in produced_sections:
+                continue  # skip sections that produced no video clip (e.g. dur < 0.05)
             # Use actual probed duration if available, otherwise fallback to theoretical
             real_dur = actual_durations.get(idx, sec["output_dur"])
             if sec["type"] == "speech":
@@ -2833,6 +2836,15 @@ class Pipeline:
             coqui_segs_only = [seg for _, seg in coqui_segments]
             fallback_results = self._tts_edge(coqui_segs_only, voice_map=self._voice_map, work_dir=coqui_dir)
             for result, (orig_idx, _) in zip(fallback_results, coqui_segments):
+                all_results[orig_idx] = result
+
+        # If Edge-TTS failed entirely, re-generate its segments via Edge-TTS retry
+        if not edge_results and edge_segments:
+            self._report("synthesize", 0.87,
+                         "Edge-TTS failed — retrying its segments...")
+            edge_segs_only = [seg for _, seg in edge_segments]
+            fallback_results = self._tts_edge(edge_segs_only, voice_map=self._voice_map, work_dir=edge_dir)
+            for result, (orig_idx, _) in zip(fallback_results, edge_segments):
                 all_results[orig_idx] = result
 
         # Sort by original segment index
