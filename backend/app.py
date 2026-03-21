@@ -401,7 +401,7 @@ async def voices(lang: str = "hi") -> Any:
 @app.get("/api/jobs")
 def list_jobs():
     """List all jobs, newest first."""
-    jobs = sorted(JOBS.values(), key=lambda j: j.created_at, reverse=True)
+    jobs = sorted(list(JOBS.values()), key=lambda j: j.created_at, reverse=True)
     return [
         {
             "id": j.id,
@@ -428,12 +428,15 @@ def _cleanup_old_jobs():
     if len(JOBS) <= MAX_JOBS:
         return
     completed = sorted(
-        [(jid, j) for jid, j in JOBS.items() if j.state in ("done", "error")],
+        [(jid, j) for jid, j in list(JOBS.items()) if j.state in ("done", "error")],
         key=lambda x: x[1].created_at,
     )
     while len(JOBS) > MAX_JOBS and completed:
         jid, _ = completed.pop(0)
         JOBS.pop(jid, None)
+        job_dir = OUTPUTS / jid
+        if job_dir.exists():
+            shutil.rmtree(job_dir, ignore_errors=True)
 
 
 @app.post("/api/jobs")
@@ -496,32 +499,37 @@ async def create_job_upload(
         while chunk := await file.read(1024 * 1024):  # 1MB chunks
             f.write(chunk)
 
-    job = Job(id=job_id, source_url=f"upload:{file.filename}", target_language=target_language)
-    JOBS[job_id] = job
+    # Validate via Pydantic BEFORE adding to JOBS to prevent zombie entries
+    try:
+        req = JobCreateRequest(
+            url=str(saved_path),
+            source_language=source_language,
+            target_language=target_language,
+            voice=voice,
+            asr_model=asr_model,
+            translation_engine=translation_engine,
+            tts_rate=tts_rate,
+            mix_original=mix_original,
+            original_volume=original_volume,
+            use_chatterbox=use_chatterbox,
+            use_elevenlabs=use_elevenlabs,
+            use_google_tts=use_google_tts,
+            use_coqui_xtts=use_coqui_xtts,
+            use_edge_tts=use_edge_tts,
+            prefer_youtube_subs=prefer_youtube_subs,
+            multi_speaker=multi_speaker,
+            transcribe_only=transcribe_only,
+            audio_priority=audio_priority,
+            audio_bitrate=audio_bitrate,
+            encode_preset=encode_preset,
+        )
+    except Exception:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise
 
-    req = JobCreateRequest(
-        url=str(saved_path),
-        source_language=source_language,
-        target_language=target_language,
-        voice=voice,
-        asr_model=asr_model,
-        translation_engine=translation_engine,
-        tts_rate=tts_rate,
-        mix_original=mix_original,
-        original_volume=original_volume,
-        use_chatterbox=use_chatterbox,
-        use_elevenlabs=use_elevenlabs,
-        use_google_tts=use_google_tts,
-        use_coqui_xtts=use_coqui_xtts,
-        use_edge_tts=use_edge_tts,
-        prefer_youtube_subs=prefer_youtube_subs,
-        multi_speaker=multi_speaker,
-        transcribe_only=transcribe_only,
-        audio_priority=audio_priority,
-        audio_bitrate=audio_bitrate,
-        encode_preset=encode_preset,
-    )
+    job = Job(id=job_id, source_url=f"upload:{file.filename}", target_language=target_language)
     job.original_req = req
+    JOBS[job_id] = job
 
     t = threading.Thread(target=_run_job, args=(job, req), daemon=True)
     t.start()
@@ -763,6 +771,9 @@ async def resume_with_srt(job_id: str, file: UploadFile = File(...)):
     if job.state != "waiting_for_srt":
         raise HTTPException(status_code=409, detail=f"Job is '{job.state}', not waiting for SRT")
 
+    # Transition state immediately to prevent duplicate resume from concurrent requests
+    job.state = "running"
+
     work_dir = OUTPUTS / job_id / "work"
     srt_path = work_dir / "translated_upload.srt"
     with open(srt_path, "wb") as f:
@@ -835,7 +846,7 @@ def delete_job(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    if job.state in ("running", "creating"):
+    if job.state in ("running", "queued"):
         raise HTTPException(status_code=409, detail="Cannot delete a running job — wait for it to finish or error out")
 
     JOBS.pop(job_id, None)
