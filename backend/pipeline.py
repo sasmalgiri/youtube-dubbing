@@ -1077,7 +1077,10 @@ class Pipeline:
         for write_flag in ["--write-sub", "--write-auto-sub"]:
             # Clean previous attempt
             for f in sub_dir.glob("*"):
-                f.unlink()
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
 
             cmd = [
                 self._ytdlp,
@@ -2843,54 +2846,54 @@ class Pipeline:
         model = ChatterboxTTS.from_pretrained(device="cuda")
 
         tts_data = []
-        for i, seg in enumerate(segments):
-            text = seg.get("text_translated", seg.get("text", "")).strip()
-            if not text:
-                continue
+        try:
+            for i, seg in enumerate(segments):
+                text = seg.get("text_translated", seg.get("text", "")).strip()
+                if not text:
+                    continue
 
-            wav_path = self.cfg.work_dir / f"tts_{i:04d}.wav"
+                wav_path = self.cfg.work_dir / f"tts_{i:04d}.wav"
 
-            try:
-                wav_tensor = model.generate(text)
-                # Save as WAV — Chatterbox outputs at 24kHz
-                torchaudio.save(str(wav_path), wav_tensor.cpu(), model.sr)
+                try:
+                    wav_tensor = model.generate(text)
+                    # Save as WAV — Chatterbox outputs at 24kHz
+                    torchaudio.save(str(wav_path), wav_tensor.cpu(), model.sr)
 
-                # Resample to our pipeline's sample rate
-                if model.sr != self.SAMPLE_RATE:
-                    resampled = self.cfg.work_dir / f"tts_{i:04d}_rs.wav"
-                    subprocess.run(
-                        [self._ffmpeg, "-y", "-i", str(wav_path),
-                         "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
-                         str(resampled)],
-                        check=True, capture_output=True,
-                    )
-                    wav_path.unlink(missing_ok=True)
-                    resampled.rename(wav_path)
+                    # Resample to our pipeline's sample rate
+                    if model.sr != self.SAMPLE_RATE:
+                        resampled = self.cfg.work_dir / f"tts_{i:04d}_rs.wav"
+                        subprocess.run(
+                            [self._ffmpeg, "-y", "-i", str(wav_path),
+                             "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
+                             str(resampled)],
+                            check=True, capture_output=True,
+                        )
+                        wav_path.unlink(missing_ok=True)
+                        resampled.rename(wav_path)
 
-            except Exception as e:
-                self._report("synthesize", 0.1 + 0.8 * ((i + 1) / len(segments)),
-                             f"Chatterbox error on seg {i+1}: {e}, skipping...")
-                continue
+                except Exception as e:
+                    self._report("synthesize", 0.1 + 0.8 * ((i + 1) / len(segments)),
+                                 f"Chatterbox error on seg {i+1}: {e}, skipping...")
+                    continue
 
-            if not wav_path.exists() or wav_path.stat().st_size == 0:
-                continue
+                if not wav_path.exists() or wav_path.stat().st_size == 0:
+                    continue
 
-            tts_dur = self._get_duration(wav_path)
-            tts_data.append({
-                "start": seg["start"],
-                "end": seg["end"],
-                "wav": wav_path,
-                "duration": tts_dur,
-            })
-            self._report(
-                "synthesize",
-                0.1 + 0.8 * ((i + 1) / len(segments)),
-                f"Synthesized {i + 1}/{len(segments)} segments (Chatterbox)...",
-            )
-
-        # Free GPU memory
-        del model
-        torch.cuda.empty_cache()
+                tts_dur = self._get_duration(wav_path)
+                tts_data.append({
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "wav": wav_path,
+                    "duration": tts_dur,
+                })
+                self._report(
+                    "synthesize",
+                    0.1 + 0.8 * ((i + 1) / len(segments)),
+                    f"Synthesized {i + 1}/{len(segments)} segments (Chatterbox)...",
+                )
+        finally:
+            del model
+            torch.cuda.empty_cache()
 
         return tts_data
 
@@ -3146,63 +3149,61 @@ class Pipeline:
         xtts_lang = XTTS_LANG_MAP.get(self.cfg.target_language, self.cfg.target_language)
 
         tts_data = []
-        for i, seg in enumerate(segments):
-            text = seg.get("text_translated", seg.get("text", "")).strip()
-            if not text:
-                continue
+        try:
+            for i, seg in enumerate(segments):
+                text = seg.get("text_translated", seg.get("text", "")).strip()
+                if not text:
+                    continue
 
-            wav_path = self.cfg.work_dir / f"tts_{i:04d}.wav"
+                wav_path = self.cfg.work_dir / f"tts_{i:04d}.wav"
 
-            # Pick per-speaker reference if available, else default
-            spk_id = seg.get("speaker_id", "")
-            seg_ref = speaker_ref_map.get(spk_id, ref_wav) if speaker_ref_map else ref_wav
+                # Pick per-speaker reference if available, else default
+                spk_id = seg.get("speaker_id", "")
+                seg_ref = speaker_ref_map.get(spk_id, ref_wav) if speaker_ref_map else ref_wav
 
-            try:
-                tts_model.tts_to_file(
-                    text=text,
-                    speaker_wav=str(seg_ref),
-                    language=xtts_lang,
-                    file_path=str(wav_path),
+                try:
+                    tts_model.tts_to_file(
+                        text=text,
+                        speaker_wav=str(seg_ref),
+                        language=xtts_lang,
+                        file_path=str(wav_path),
+                    )
+
+                    # Convert to target sample rate and stereo
+                    wav_fixed = self.cfg.work_dir / f"tts_{i:04d}_fixed.wav"
+                    subprocess.run(
+                        [self._ffmpeg, "-y", "-i", str(wav_path),
+                         "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
+                         str(wav_fixed)],
+                        check=True, capture_output=True,
+                    )
+                    import shutil
+                    shutil.move(str(wav_fixed), str(wav_path))
+
+                except Exception as e:
+                    self._report("synthesize", 0.1 + 0.8 * ((i + 1) / len(segments)),
+                                 f"XTTS error on seg {i+1}: {e}, skipping...")
+                    continue
+
+                if not wav_path.exists() or wav_path.stat().st_size == 0:
+                    continue
+
+                tts_dur = self._get_duration(wav_path)
+                tts_data.append({
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "wav": wav_path,
+                    "duration": tts_dur,
+                })
+                self._report(
+                    "synthesize",
+                    0.1 + 0.8 * ((i + 1) / len(segments)),
+                    f"Synthesized {i + 1}/{len(segments)} segments (XTTS v2 voice clone)...",
                 )
-
-                # Convert to target sample rate and stereo
-                wav_fixed = self.cfg.work_dir / f"tts_{i:04d}_fixed.wav"
-                subprocess.run(
-                    [self._ffmpeg, "-y", "-i", str(wav_path),
-                     "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
-                     str(wav_fixed)],
-                    check=True, capture_output=True,
-                )
-                import shutil
-                shutil.move(str(wav_fixed), str(wav_path))
-
-            except Exception as e:
-                self._report("synthesize", 0.1 + 0.8 * ((i + 1) / len(segments)),
-                             f"XTTS error on seg {i+1}: {e}, skipping...")
-                continue
-
-            if not wav_path.exists() or wav_path.stat().st_size == 0:
-                continue
-
-            tts_dur = self._get_duration(wav_path)
-            tts_data.append({
-                "start": seg["start"],
-                "end": seg["end"],
-                "wav": wav_path,
-                "duration": tts_dur,
-            })
-            self._report(
-                "synthesize",
-                0.1 + 0.8 * ((i + 1) / len(segments)),
-                f"Synthesized {i + 1}/{len(segments)} segments (XTTS v2 voice clone)...",
-            )
-
-        # Free GPU memory
-        del tts_model
-        torch.cuda.empty_cache()
-
-        # Restore original stdout/stderr (broken wrappers crash uvicorn logging)
-        sys.stdout, sys.stderr = _orig_stdout, _orig_stderr
+        finally:
+            del tts_model
+            torch.cuda.empty_cache()
+            sys.stdout, sys.stderr = _orig_stdout, _orig_stderr
 
         return tts_data
 

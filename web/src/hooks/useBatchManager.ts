@@ -43,6 +43,9 @@ export interface BatchSettings {
     audio_priority?: boolean;
     audio_bitrate?: string;
     encode_preset?: string;
+    prefer_youtube_subs?: boolean;
+    multi_speaker?: boolean;
+    transcribe_only?: boolean;
 }
 
 interface UseBatchManagerReturn {
@@ -208,6 +211,9 @@ export function useBatchManager(): UseBatchManagerReturn {
                     audio_priority: settings.audio_priority,
                     audio_bitrate: settings.audio_bitrate,
                     encode_preset: settings.encode_preset,
+                    prefer_youtube_subs: settings.prefer_youtube_subs,
+                    multi_speaker: settings.multi_speaker,
+                    transcribe_only: settings.transcribe_only,
                 };
 
                 const { id } = isRemoteBackend
