@@ -372,7 +372,7 @@ def _run_job(job: Job, req: JobCreateRequest):
 
     except Exception as e:
         import traceback
-        _Path("/tmp/voicedub_error.log").write_text(
+        (OUTPUTS / job.id / "error.log").write_text(
             f"[JOB ERROR] {e}\n{traceback.format_exc()}", encoding="utf-8"
         )
         job.state = "error"
@@ -714,7 +714,7 @@ def _run_resume(job: Job):
 
     except Exception as e:
         import traceback
-        _Path("/tmp/voicedub_error.log").write_text(
+        (OUTPUTS / job.id / "error.log").write_text(
             f"[RESUME ERROR] {e}\n{traceback.format_exc()}", encoding="utf-8"
         )
         job.state = "error"
