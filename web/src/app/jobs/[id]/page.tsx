@@ -1,20 +1,19 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useJobProgress } from '@/hooks/useJobProgress';
 import ProgressPipeline from '@/components/ProgressPipeline';
 import VideoPlayer from '@/components/VideoPlayer';
 import TranscriptViewer from '@/components/TranscriptViewer';
-import { resultVideoUrl, originalVideoUrl, resultSrtUrl, sourceSrtUrl, uploadTranslatedSrt, deleteJob, retryJob } from '@/lib/api';
+import { resultVideoUrl, originalVideoUrl, resultSrtUrl, sourceSrtUrl, uploadTranslatedSrt, deleteJob } from '@/lib/api';
 
 export default function JobPage() {
     const params = useParams();
     const router = useRouter();
     const jobId = params.id as string;
     const [cancelling, setCancelling] = useState(false);
-    const [retrying, setRetrying] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [uploadError, setUploadError] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -111,7 +110,7 @@ export default function JobPage() {
                             </a>
                             <a
                                 href={resultVideoUrl(jobId)}
-                                download
+                                download={status?.video_title ? `${status.video_title} - Dubbed.mp4` : `dubbed_${jobId}.mp4`}
                                 className="btn-primary text-sm flex items-center gap-2"
                             >
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -188,32 +187,9 @@ export default function JobPage() {
                                 <line x1="12" x2="12" y1="8" y2="12" />
                                 <line x1="12" x2="12.01" y1="16" y2="16" />
                             </svg>
-                            <div className="flex-1">
+                            <div>
                                 <p className="text-sm font-medium text-error mb-1">Dubbing Failed</p>
-                                <p className="text-sm text-text-secondary mb-3">{error}</p>
-                                <button
-                                    onClick={async () => {
-                                        setRetrying(true);
-                                        try {
-                                            await retryJob(jobId);
-                                            restart();
-                                        } catch (e) {
-                                            alert(e instanceof Error ? e.message : 'Retry failed');
-                                        } finally {
-                                            setRetrying(false);
-                                        }
-                                    }}
-                                    disabled={retrying}
-                                    className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center gap-2"
-                                >
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                        <path d="M21 2v6h-6" />
-                                        <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
-                                        <path d="M3 22v-6h6" />
-                                        <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
-                                    </svg>
-                                    {retrying ? 'Retrying...' : 'Retry Job'}
-                                </button>
+                                <p className="text-sm text-text-secondary">{error}</p>
                             </div>
                         </div>
                     </div>
@@ -286,6 +262,52 @@ export default function JobPage() {
                 {/* Results - shown when complete */}
                 {isComplete && (
                     <div className="space-y-8 animate-slide-up">
+                        {/* Saved Location */}
+                        {status?.saved_folder && (
+                            <div className="glass-card p-4 flex items-center gap-3">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-green-400 flex-shrink-0">
+                                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                                    <path d="m9 15 3-3 3 3" /><path d="M12 12v6" />
+                                </svg>
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-xs text-text-muted mb-0.5">Saved to</p>
+                                    <p className="text-sm text-text-primary font-mono truncate">{status.saved_folder}</p>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* YouTube Description */}
+                        {status?.description && (
+                            <div className="glass-card p-5 space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                                            <polyline points="14 2 14 8 20 8" />
+                                            <line x1="16" x2="8" y1="13" y2="13" />
+                                            <line x1="16" x2="8" y1="17" y2="17" />
+                                        </svg>
+                                        YouTube Description
+                                    </h3>
+                                    <button
+                                        onClick={() => {
+                                            navigator.clipboard.writeText(status.description || '');
+                                        }}
+                                        className="text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center gap-1.5"
+                                    >
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+                                            <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+                                        </svg>
+                                        Copy
+                                    </button>
+                                </div>
+                                <pre className="text-xs text-text-secondary whitespace-pre-wrap leading-relaxed bg-bg/50 rounded-lg p-3 max-h-60 overflow-y-auto">
+                                    {status.description}
+                                </pre>
+                            </div>
+                        )}
+
                         {/* Video Player */}
                         <VideoPlayer
                             originalUrl={originalVideoUrl(jobId)}

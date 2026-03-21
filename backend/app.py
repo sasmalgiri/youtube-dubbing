@@ -18,6 +18,7 @@ if _env_file.exists():
 
 import asyncio
 import json
+import re
 import shutil
 import threading
 import time
@@ -57,6 +58,9 @@ class Job:
     created_at: float = field(default_factory=time.time)
     events: List[Dict] = field(default_factory=list)
     original_req: Optional[Any] = None  # Store original request for resume
+    saved_folder: Optional[str] = None  # Path to titled output folder
+    saved_video: Optional[str] = None   # Path to saved video file
+    description: Optional[str] = None   # YouTube description
 
 
 class JobCreateRequest(BaseModel):
@@ -80,7 +84,6 @@ class JobCreateRequest(BaseModel):
     audio_priority: bool = False
     audio_bitrate: str = "192k"
     encode_preset: str = "veryfast"
-    use_groq_whisper: bool = False
 
 
 # ── Step weights for overall progress ────────────────────────────────────────
@@ -102,6 +105,10 @@ BASE_DIR = Path(__file__).resolve().parent
 WORK_ROOT = BASE_DIR / "work"
 OUTPUTS = WORK_ROOT / "outputs"
 OUTPUTS.mkdir(parents=True, exist_ok=True)
+
+# Final saved dubbed videos go here, organized by title
+SAVED_DIR = BASE_DIR / "dubbed_outputs"
+SAVED_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── App ──────────────────────────────────────────────────────────────────────
 
@@ -131,6 +138,124 @@ def _calc_overall(step: str, step_progress: float) -> float:
             break
         overall += STEP_WEIGHTS.get(s, 0)
     return min(overall, 1.0)
+
+
+def _sanitize_filename(name: str) -> str:
+    """Convert a video title to a safe folder/file name."""
+    # Remove or replace unsafe characters
+    name = re.sub(r'[<>:"/\\|?*]', '', name)
+    name = re.sub(r'\s+', ' ', name).strip()
+    # Truncate to avoid filesystem limits
+    if len(name) > 120:
+        name = name[:120].rsplit(' ', 1)[0]
+    return name or "Untitled"
+
+
+def _save_to_titled_folder(job: Job):
+    """Copy dubbed video + SRT to a titled folder in dubbed_outputs/."""
+    if not job.result_path or not job.result_path.exists():
+        return
+
+    title = _sanitize_filename(job.video_title or "Untitled")
+    lang = job.target_language or "hi"
+
+    # Create folder: dubbed_outputs/<Title> [Hindi Dubbed]
+    folder_name = f"{title} [{lang.upper()} Dubbed]"
+    folder = SAVED_DIR / folder_name
+
+    # If folder exists, add job id suffix to avoid collision
+    if folder.exists():
+        folder = SAVED_DIR / f"{folder_name} ({job.id})"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    # Copy video with title as filename
+    video_name = f"{title} - {lang.upper()} Dubbed.mp4"
+    saved_video = folder / video_name
+    shutil.copy2(job.result_path, saved_video)
+
+    # Copy SRT if available
+    srt_src = job.result_path.parent / f"subtitles_{lang}.srt"
+    if srt_src.exists():
+        srt_name = f"{title} - {lang.upper()} Dubbed.srt"
+        shutil.copy2(srt_src, folder / srt_name)
+
+    job.saved_folder = str(folder)
+    job.saved_video = str(saved_video)
+
+
+def _generate_youtube_description(job: Job) -> str:
+    """Generate a 10-line YouTube summary description using Groq or fallback."""
+    title = job.video_title or "Untitled"
+    lang_names = {
+        "hi": "Hindi", "bn": "Bengali", "ta": "Tamil", "te": "Telugu",
+        "mr": "Marathi", "es": "Spanish", "fr": "French", "de": "German",
+        "ja": "Japanese", "ko": "Korean", "zh": "Chinese", "pt": "Portuguese",
+    }
+    lang_name = lang_names.get(job.target_language, job.target_language)
+
+    # Collect translated text from segments for context
+    translated_texts = []
+    for seg in (job.segments or [])[:20]:
+        t = seg.get("text_translated") or seg.get("text", "")
+        if t.strip():
+            translated_texts.append(t.strip())
+    context = " ".join(translated_texts[:15])
+
+    prompt = (
+        f"You are a YouTube description writer. Write a compelling 10-line YouTube video description "
+        f"for a video titled \"{title}\" that has been dubbed into {lang_name}.\n\n"
+        f"Content context from the video:\n{context[:1500]}\n\n"
+        f"Rules:\n"
+        f"- Line 1: Hook/attention-grabbing summary of the video\n"
+        f"- Lines 2-4: Brief synopsis of what happens in the video\n"
+        f"- Line 5: Mention it's dubbed in {lang_name}\n"
+        f"- Lines 6-8: Relevant hashtags and keywords\n"
+        f"- Line 9: Call to action (like, subscribe, share)\n"
+        f"- Line 10: Credits/disclaimer about AI dubbing\n"
+        f"- Write in English\n"
+        f"- Each line should be a separate paragraph\n"
+        f"- Keep it engaging and SEO-friendly\n"
+        f"- Output ONLY the description, no extra text"
+    )
+
+    # Try Groq first (free, fast)
+    groq_key = os.environ.get("GROQ_API_KEY", "").strip()
+    if groq_key:
+        try:
+            import requests
+            resp = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [
+                        {"role": "system", "content": "You are a professional YouTube description writer."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 500,
+                },
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                desc = resp.json()["choices"][0]["message"]["content"].strip()
+                return desc
+        except Exception:
+            pass
+
+    # Fallback: generate a simple template description
+    return (
+        f"{title} - {lang_name} Dubbed Version\n\n"
+        f"Watch this amazing video now dubbed in {lang_name}!\n\n"
+        f"This video has been professionally dubbed using AI voice technology "
+        f"to bring you the best viewing experience in {lang_name}.\n\n"
+        f"Original content translated and voiced with natural-sounding {lang_name} narration.\n\n"
+        f"#{lang_name}Dubbed #{lang_name} #AIDubbing #VoiceDub #YouTubeDubbing\n\n"
+        f"If you enjoyed this dubbed version, please Like, Subscribe, and Share!\n\n"
+        f"Turn on notifications to never miss a new dubbed video.\n\n"
+        f"This video was dubbed using AI voice technology. "
+        f"Original content belongs to the respective creators."
+    )
 
 
 def _make_progress_callback(job: Job):
@@ -190,7 +315,6 @@ def _run_job(job: Job, req: JobCreateRequest):
             audio_priority=req.audio_priority,
             audio_bitrate=req.audio_bitrate,
             encode_preset=req.encode_preset,
-            use_groq_whisper=req.use_groq_whisper,
         )
 
         pipeline = Pipeline(cfg, on_progress=_make_progress_callback(job))
@@ -210,6 +334,25 @@ def _run_job(job: Job, req: JobCreateRequest):
             raise RuntimeError("Pipeline finished but output file not found")
 
         job.result_path = out_path
+        job.video_title = pipeline.video_title or "Untitled"
+        job.segments = pipeline.segments
+
+        # Auto-save to titled folder
+        try:
+            _save_to_titled_folder(job)
+        except Exception as save_err:
+            print(f"[WARN] Failed to save to titled folder: {save_err}")
+
+        # Generate YouTube description
+        try:
+            job.description = _generate_youtube_description(job)
+            # Save description file to the titled folder
+            if job.saved_folder:
+                desc_path = Path(job.saved_folder) / "description.txt"
+                desc_path.write_text(job.description, encoding="utf-8")
+        except Exception as desc_err:
+            print(f"[WARN] Failed to generate description: {desc_err}")
+
         job.overall_progress = 1.0
         job.state = "done"
         job.message = "Complete"
@@ -255,6 +398,8 @@ def list_jobs():
             "video_title": j.video_title,
             "target_language": j.target_language,
             "created_at": j.created_at,
+            "saved_folder": j.saved_folder,
+            "saved_video": j.saved_video,
         }
         for j in jobs
     ]
@@ -294,13 +439,7 @@ async def create_job_upload(
     prefer_youtube_subs: bool = Form(False),
     multi_speaker: bool = Form(False),
     transcribe_only: bool = Form(False),
-    use_groq_whisper: bool = Form(False),
     voice: str = Form("hi-IN-SwaraNeural"),
-    asr_model: str = Form("large-v3"),
-    translation_engine: str = Form("auto"),
-    audio_priority: bool = Form(False),
-    audio_bitrate: str = Form("192k"),
-    encode_preset: str = Form("veryfast"),
 ):
     """Create a dubbing job from an uploaded video file."""
     if not file.filename:
@@ -327,8 +466,6 @@ async def create_job_upload(
         source_language=source_language,
         target_language=target_language,
         voice=voice,
-        asr_model=asr_model,
-        translation_engine=translation_engine,
         tts_rate=tts_rate,
         mix_original=mix_original,
         original_volume=original_volume,
@@ -340,10 +477,6 @@ async def create_job_upload(
         prefer_youtube_subs=prefer_youtube_subs,
         multi_speaker=multi_speaker,
         transcribe_only=transcribe_only,
-        audio_priority=audio_priority,
-        audio_bitrate=audio_bitrate,
-        encode_preset=encode_preset,
-        use_groq_whisper=use_groq_whisper,
     )
     job.original_req = req
 
@@ -391,6 +524,9 @@ def get_job(job_id: str):
         "target_language": job.target_language,
         "created_at": job.created_at,
         "config": _job_config(job),
+        "saved_folder": job.saved_folder,
+        "saved_video": job.saved_video,
+        "description": job.description,
     }
 
 
@@ -435,10 +571,11 @@ def get_result(job_id: str):
     if job.state != "done" or not job.result_path:
         raise HTTPException(status_code=409, detail="Job not complete")
 
+    title = _sanitize_filename(job.video_title) if job.video_title else f"dubbed_{job_id}"
     return FileResponse(
         path=str(job.result_path),
         media_type="video/mp4",
-        filename=f"dubbed_{job_id}.mp4",
+        filename=f"{title} - Dubbed.mp4",
     )
 
 
@@ -516,6 +653,22 @@ def _run_resume(job: Job):
         job.result_path = out_path
         job.segments = pipeline.segments
         job.video_title = job.video_title or "Untitled"
+
+        # Auto-save to titled folder
+        try:
+            _save_to_titled_folder(job)
+        except Exception:
+            pass
+
+        # Generate YouTube description
+        try:
+            job.description = _generate_youtube_description(job)
+            if job.saved_folder:
+                desc_path = Path(job.saved_folder) / "description.txt"
+                desc_path.write_text(job.description, encoding="utf-8")
+        except Exception:
+            pass
+
         job.overall_progress = 1.0
         job.state = "done"
         job.message = "Complete"
@@ -572,6 +725,39 @@ def get_original_video(job_id: str):
     return FileResponse(path=str(source), media_type="video/mp4")
 
 
+@app.get("/api/jobs/{job_id}/description")
+def get_description(job_id: str):
+    """Get the YouTube description for a completed job."""
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {
+        "description": job.description or "",
+        "video_title": job.video_title,
+        "saved_folder": job.saved_folder,
+    }
+
+
+@app.get("/api/outputs")
+def list_outputs():
+    """List all saved dubbed outputs (titled folders)."""
+    outputs = []
+    if SAVED_DIR.exists():
+        for folder in sorted(SAVED_DIR.iterdir(), key=lambda f: f.stat().st_mtime, reverse=True):
+            if folder.is_dir():
+                videos = list(folder.glob("*.mp4"))
+                desc_file = folder / "description.txt"
+                outputs.append({
+                    "folder_name": folder.name,
+                    "folder_path": str(folder),
+                    "video_file": str(videos[0]) if videos else None,
+                    "has_description": desc_file.exists(),
+                    "has_srt": bool(list(folder.glob("*.srt"))),
+                    "created": folder.stat().st_mtime,
+                })
+    return outputs
+
+
 @app.delete("/api/jobs/{job_id}")
 def delete_job(job_id: str):
     job = JOBS.pop(job_id, None)
@@ -583,30 +769,3 @@ def delete_job(job_id: str):
         shutil.rmtree(job_dir, ignore_errors=True)
 
     return {"status": "deleted"}
-
-
-@app.post("/api/jobs/{job_id}/retry")
-def retry_job(job_id: str):
-    job = JOBS.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    if job.state not in ("error", "done"):
-        raise HTTPException(status_code=400, detail="Job is still running")
-
-    req = job.original_req
-    if not req:
-        raise HTTPException(status_code=400, detail="Original request not found — cannot retry")
-
-    # Reset job state
-    job.state = "queued"
-    job.current_step = "download"
-    job.step_progress = 0
-    job.overall_progress = 0
-    job.message = "Retrying..."
-    job.error = None
-    job.events = []
-
-    t = threading.Thread(target=_run_job, args=(job, req), daemon=True)
-    t.start()
-
-    return {"id": job.id, "state": "queued"}

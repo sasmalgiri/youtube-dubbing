@@ -11,7 +11,7 @@ import {
     type SSEEvent,
 } from '@/lib/api';
 
-const MAX_CONCURRENT = 2;
+const MAX_CONCURRENT = 3;
 
 export type BatchItemState = 'pending' | 'creating' | 'running' | 'done' | 'error';
 
@@ -30,6 +30,8 @@ export interface BatchItem {
 export interface BatchSettings {
     source_language?: string;
     target_language?: string;
+    asr_model?: string;
+    translation_engine?: string;
     tts_rate?: string;
     mix_original?: boolean;
     original_volume?: number;
@@ -38,6 +40,9 @@ export interface BatchSettings {
     use_google_tts?: boolean;
     use_coqui_xtts?: boolean;
     use_edge_tts?: boolean;
+    audio_priority?: boolean;
+    audio_bitrate?: string;
+    encode_preset?: string;
 }
 
 interface UseBatchManagerReturn {
@@ -190,6 +195,8 @@ export function useBatchManager(): UseBatchManagerReturn {
                 const jobReq: Omit<JobCreateRequest, 'url'> & { url?: string } = {
                     source_language: settings.source_language,
                     target_language: settings.target_language,
+                    asr_model: settings.asr_model,
+                    translation_engine: settings.translation_engine,
                     tts_rate: settings.tts_rate,
                     mix_original: settings.mix_original,
                     original_volume: settings.original_volume,
@@ -198,6 +205,9 @@ export function useBatchManager(): UseBatchManagerReturn {
                     use_google_tts: settings.use_google_tts,
                     use_coqui_xtts: settings.use_coqui_xtts,
                     use_edge_tts: settings.use_edge_tts,
+                    audio_priority: settings.audio_priority,
+                    audio_bitrate: settings.audio_bitrate,
+                    encode_preset: settings.encode_preset,
                 };
 
                 const { id } = isRemoteBackend

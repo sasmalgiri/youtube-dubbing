@@ -38,7 +38,6 @@ export interface JobCreateRequest {
     audio_priority?: boolean;
     audio_bitrate?: string;
     encode_preset?: string;
-    use_groq_whisper?: boolean;
 }
 
 export interface JobConfig {
@@ -63,6 +62,9 @@ export interface JobStatus {
     target_language: string;
     created_at: number;
     config?: JobConfig;
+    saved_folder?: string | null;
+    saved_video?: string | null;
+    description?: string | null;
 }
 
 export interface TranscriptSegment {
@@ -152,18 +154,6 @@ export async function getTranscript(id: string): Promise<Transcript> {
         headers: { ...EXTRA_HEADERS },
     });
     if (!res.ok) throw new Error('Failed to fetch transcript');
-    return res.json();
-}
-
-export async function retryJob(id: string): Promise<{ id: string; state: string }> {
-    const res = await fetch(`${API_BASE}/api/jobs/${id}/retry`, {
-        method: 'POST',
-        headers: { ...EXTRA_HEADERS },
-    });
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: 'Retry failed' }));
-        throw new Error(err.detail || 'Failed to retry job');
-    }
     return res.json();
 }
 
