@@ -372,7 +372,8 @@ class Pipeline:
             return {}, {}
 
     def _detect_speaker_genders(self, wav_path: Path, speakers: Dict[str, List[tuple]]) -> Dict[str, str]:
-        """Detect gender per speaker using pitch (F0) analysis. Male < 165Hz, Female >= 165Hz."""
+        """Detect gender per speaker using pitch (F0) analysis. Male < 165Hz, Female >= 165Hz.
+        Reads only needed time ranges to avoid OOM on long videos."""
         import struct
 
         with wave.open(str(wav_path), "rb") as wf:
@@ -380,41 +381,34 @@ class Pipeline:
             sample_width = wf.getsampwidth()
             sample_rate = wf.getframerate()
             n_frames = wf.getnframes()
-            raw_data = wf.readframes(n_frames)
+            max_val = float(2 ** (8 * sample_width - 1))
+            fmt_char = "h" if sample_width == 2 else "i"
 
-        # Convert to float samples (mono)
-        fmt = f"<{n_frames * n_channels}h" if sample_width == 2 else f"<{n_frames * n_channels}i"
-        try:
-            samples = list(struct.unpack(fmt, raw_data))
-        except struct.error:
-            # Fallback: treat all as unknown
-            return {spk: "female" for spk in speakers}
+            result = {}
+            for speaker, time_ranges in speakers.items():
+                speaker_samples: list = []
+                for t_start, t_end in time_ranges[:10]:
+                    s_start = max(0, min(int(t_start * sample_rate), n_frames - 1))
+                    s_end = max(0, min(int(t_end * sample_rate), n_frames))
+                    count = s_end - s_start
+                    if count < 1:
+                        continue
+                    wf.setpos(s_start)
+                    raw = wf.readframes(count)
+                    try:
+                        chunk = struct.unpack(f"<{count * n_channels}{fmt_char}", raw)
+                    except struct.error:
+                        continue
+                    if n_channels > 1:
+                        chunk = chunk[::n_channels]
+                    speaker_samples.extend(s / max_val for s in chunk)
 
-        # Take every nth channel for mono
-        if n_channels > 1:
-            samples = samples[::n_channels]
+                if len(speaker_samples) < sample_rate * 0.5:
+                    result[speaker] = "female"
+                    continue
 
-        max_val = float(2 ** (8 * sample_width - 1))
-        samples = [s / max_val for s in samples]
-
-        result = {}
-        for speaker, time_ranges in speakers.items():
-            # Collect audio samples for this speaker
-            speaker_samples = []
-            for t_start, t_end in time_ranges[:10]:  # Limit to first 10 segments
-                s_start = int(t_start * sample_rate)
-                s_end = int(t_end * sample_rate)
-                s_start = max(0, min(s_start, len(samples) - 1))
-                s_end = max(0, min(s_end, len(samples)))
-                speaker_samples.extend(samples[s_start:s_end])
-
-            if len(speaker_samples) < sample_rate * 0.5:
-                # Too little audio, default to female
-                result[speaker] = "female"
-                continue
-
-            pitch = self._estimate_pitch_autocorrelation(speaker_samples, sample_rate)
-            result[speaker] = "male" if pitch < 165 else "female"
+                pitch = self._estimate_pitch_autocorrelation(speaker_samples, sample_rate)
+                result[speaker] = "male" if pitch < 165 else "female"
 
         return result
 
@@ -1396,12 +1390,15 @@ class Pipeline:
                                      f"Rate limited, retrying in {wait}s...")
                         time.sleep(wait)
                     else:
+                        # Only translate the failed chunk via fallback, keep already-translated parts
                         groq_key = os.environ.get("GROQ_API_KEY", "").strip()
                         if groq_key:
-                            self._report("translate", 0.2, f"Gemini failed: {e}, falling back to Groq...")
-                            return self._translate_with_groq(full_text, groq_key, speech_duration)
-                        self._report("translate", 0.2, f"Gemini failed: {e}, falling back to Google Translate...")
-                        return self._translate_with_google(full_text)
+                            self._report("translate", 0.2, f"Gemini failed on chunk {i+1}: {e}, using Groq for this chunk...")
+                            fallback = self._translate_with_groq(chunk, groq_key, chunk_duration)
+                        else:
+                            self._report("translate", 0.2, f"Gemini failed on chunk {i+1}: {e}, using Google for this chunk...")
+                            fallback = self._translate_with_google(chunk)
+                        translated_parts.append(fallback)
 
             self._report("translate", 0.2 + 0.8 * ((i + 1) / len(chunks)),
                          f"Translated chunk {i + 1}/{len(chunks)} (Gemini)")
@@ -2268,6 +2265,9 @@ class Pipeline:
             start_byte = int(seg["start"] * self.SAMPLE_RATE) * bytes_per_frame
 
             with wave.open(str(seg["wav"]), 'rb') as w:
+                # Validate format matches timeline expectations
+                if w.getnchannels() != self.N_CHANNELS or w.getsampwidth() != 2:
+                    continue  # Skip mismatched format to avoid corrupted audio
                 raw = w.readframes(w.getnframes())
 
             end_byte = min(start_byte + len(raw), len(timeline))
@@ -2475,7 +2475,7 @@ class Pipeline:
                     })
 
             audio_pos += sections[-1]["output_dur"]
-            current_pos = seg_end
+            current_pos = max(current_pos, seg_end)  # Never move backward for overlapping segments
 
         # Trailing gap
         if current_pos < total_video_duration - 0.05:
@@ -3116,20 +3116,26 @@ class Pipeline:
         except Exception:
             pass  # If wrapping fails, continue with originals
         # PyTorch 2.6+ defaults weights_only=True which breaks Coqui's model loading
-        _original_torch_load = torch.load
-        torch.load = lambda *args, **kwargs: _original_torch_load(
-            *args, **{**kwargs, "weights_only": False}
-        )
+        # Use a lock to prevent concurrent pipelines from racing on the global monkey-patch
+        import threading
+        if not hasattr(Pipeline, '_torch_load_lock'):
+            Pipeline._torch_load_lock = threading.Lock()
+
         from TTS.api import TTS
 
         self._report("synthesize", 0.02, "Loading XTTS v2 model on GPU (this may take a minute)...")
         tts_data = []
         tts_model = None
         try:
-            try:
-                tts_model = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to("cuda")
-            finally:
-                torch.load = _original_torch_load  # Restore original
+            with Pipeline._torch_load_lock:
+                _original_torch_load = torch.load
+                torch.load = lambda *args, **kwargs: _original_torch_load(
+                    *args, **{**kwargs, "weights_only": False}
+                )
+                try:
+                    tts_model = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to("cuda")
+                finally:
+                    torch.load = _original_torch_load
 
             # Build per-speaker reference map if available
             refs_dir = self.cfg.work_dir / "speaker_refs"
@@ -3561,12 +3567,15 @@ class Pipeline:
         except subprocess.CalledProcessError:
             pass  # rubberband not available, fall back to atempo
 
-        # Fallback: atempo filter (chain for ratios > 2.0)
+        # Fallback: atempo filter (chain for ratios outside 0.5-2.0)
         tempo = ratio
         filters = []
         while tempo > 2.0:
             filters.append("atempo=2.0")
             tempo /= 2.0
+        while tempo < 0.5:
+            filters.append("atempo=0.5")
+            tempo /= 0.5
         filters.append(f"atempo={tempo:.4f}")
         subprocess.run(
             [self._ffmpeg, "-y", "-i", str(wav_path),
