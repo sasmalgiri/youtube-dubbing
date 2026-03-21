@@ -241,6 +241,7 @@ class Pipeline:
         self.segments: List[Dict] = []
         self.video_title: str = ""
         self._voice_map = None
+        self._whisper_audio = None  # Lightweight 16kHz mono audio for transcription
         self.cfg.work_dir.mkdir(parents=True, exist_ok=True)
 
         # Resolve executable paths
@@ -612,7 +613,9 @@ class Pipeline:
             if self.cfg.prefer_youtube_subs:
                 self._report("transcribe", 0.05, "No subtitles found, using Whisper...")
             self._report("transcribe", 0.1, "Loading ASR model...")
-            self.segments = self._transcribe(audio_raw)
+            # Use 16kHz mono audio for transcription (smaller, faster upload for Groq API)
+            whisper_audio = getattr(self, '_whisper_audio', audio_raw)
+            self.segments = self._transcribe(whisper_audio)
             self._report("transcribe", 1.0, f"Transcribed {len(self.segments)} segments")
 
         text_segments = [s for s in self.segments if s.get("text", "").strip()]
@@ -660,31 +663,37 @@ class Pipeline:
         srt_translated = self.cfg.work_dir / f"transcript_{self.cfg.target_language}.srt"
         write_srt(self.segments, srt_translated, text_key="text_translated")
 
-        # Step 5: Generate TTS at natural speed, then speed up to 1.5x
+        # Step 5: Generate TTS (Edge-TTS already includes 1.25x speedup in one pass)
         self._report("synthesize", 0.0,
-                     f"Generating natural speech ({self.cfg.tts_voice})...")
+                     f"Generating speech ({self.cfg.tts_voice})...")
         tts_data = self._generate_tts_natural(text_segments)
         if not tts_data:
             raise RuntimeError("TTS synthesis produced no audio segments — check TTS engine settings")
-        self._report("synthesize", 0.9,
-                     f"Generated {len(tts_data)} segments, speeding up to 1.25x...")
 
-        # Speed up all TTS clips to 1.25x for snappier delivery (parallel)
-        TTS_SPEED = 1.25
-        from concurrent.futures import ThreadPoolExecutor
+        # Only speed up if TTS engine didn't already do it (Edge-TTS does it in MP3→WAV pass)
+        already_sped = any(t.get("_already_sped") for t in tts_data)
+        if not already_sped:
+            self._report("synthesize", 0.9,
+                         f"Speeding up {len(tts_data)} segments to 1.25x...")
+            TTS_SPEED = 1.25
+            from concurrent.futures import ThreadPoolExecutor
 
-        def speedup_one(idx_tts):
-            idx, tts = idx_tts
-            sped_wav = self.cfg.work_dir / f"tts_fast_{idx:04d}.wav"
-            self._time_stretch(tts["wav"], TTS_SPEED, sped_wav)
-            tts["wav"] = sped_wav
-            tts["duration"] = tts["duration"] / TTS_SPEED
+            def speedup_one(idx_tts):
+                idx, tts = idx_tts
+                sped_wav = self.cfg.work_dir / f"tts_fast_{idx:04d}.wav"
+                self._time_stretch(tts["wav"], TTS_SPEED, sped_wav)
+                tts["wav"] = sped_wav
+                tts["duration"] = tts["duration"] / TTS_SPEED
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(speedup_one, enumerate(tts_data)))
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                list(pool.map(speedup_one, enumerate(tts_data)))
+
+        # Clean up internal flag
+        for t in tts_data:
+            t.pop("_already_sped", None)
 
         self._report("synthesize", 1.0,
-                     f"All {len(tts_data)} segments at 1.25x speed")
+                     f"All {len(tts_data)} segments ready")
 
         # Step 6: Assemble — AUDIO IS MASTER, video adapts
         self._report("assemble", 0.0, "Building dubbed output...")
@@ -776,25 +785,35 @@ class Pipeline:
         srt_translated = self.cfg.work_dir / f"transcript_{self.cfg.target_language}.srt"
         shutil.copy2(translated_srt_path, srt_translated)
 
-        # Step 5: Generate TTS
+        # Step 5: Generate TTS (Edge-TTS includes 1.25x speedup in one pass)
         text_segments = translated
         self._report("synthesize", 0.0,
-                     f"Generating natural speech ({self.cfg.tts_voice})...")
+                     f"Generating speech ({self.cfg.tts_voice})...")
         tts_data = self._generate_tts_natural(text_segments)
         if not tts_data:
             raise RuntimeError("TTS synthesis produced no audio segments — check TTS engine settings")
-        self._report("synthesize", 0.9,
-                     f"Generated {len(tts_data)} segments, speeding up to 1.25x...")
 
-        TTS_SPEED = 1.25
-        for idx, tts in enumerate(tts_data):
-            sped_wav = self.cfg.work_dir / f"tts_fast_{idx:04d}.wav"
-            self._time_stretch(tts["wav"], TTS_SPEED, sped_wav)
-            tts["wav"] = sped_wav
-            tts["duration"] = tts["duration"] / TTS_SPEED
+        already_sped = any(t.get("_already_sped") for t in tts_data)
+        if not already_sped:
+            self._report("synthesize", 0.9, "Speeding up to 1.25x...")
+            TTS_SPEED = 1.25
+            from concurrent.futures import ThreadPoolExecutor
+
+            def speedup_one(idx_tts):
+                idx, tts = idx_tts
+                sped_wav = self.cfg.work_dir / f"tts_fast_{idx:04d}.wav"
+                self._time_stretch(tts["wav"], TTS_SPEED, sped_wav)
+                tts["wav"] = sped_wav
+                tts["duration"] = tts["duration"] / TTS_SPEED
+
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                list(pool.map(speedup_one, enumerate(tts_data)))
+
+        for t in tts_data:
+            t.pop("_already_sped", None)
 
         self._report("synthesize", 1.0,
-                     f"All {len(tts_data)} segments at 1.25x speed")
+                     f"All {len(tts_data)} segments ready")
 
         # Step 6: Assemble
         self._report("assemble", 0.0, "Building dubbed output...")
@@ -863,25 +882,13 @@ class Pipeline:
             node_path = self._find_executable("node")
             js_args = ["--js-runtimes", f"node:{node_path}"] if node_path else []
 
-            # Get video title first
-            try:
-                title_cmd = [self._ytdlp, "--print", "%(title)s", "--no-download"] + cookies_args + js_args + [src]
-                title_result = subprocess.run(
-                    title_cmd, capture_output=True, text=True, timeout=30,
-                )
-                if title_result.returncode == 0 and title_result.stdout.strip():
-                    self.video_title = title_result.stdout.strip().split("\n")[0]
-            except Exception:
-                self.video_title = "Untitled"
-
-            self._report("download", 0.2, f"Downloading: {self.video_title}")
-
-            # Download video
+            # Download video and get title in one call (saves an extra yt-dlp invocation)
             try:
                 dl_cmd = [
                     self._ytdlp,
                     "-f", "bv*+ba/b",
                     "--merge-output-format", "mp4",
+                    "--print", "%(title)s",
                     "-o", out_tpl,
                 ]
                 # Only add --ffmpeg-location if we have a real path (not bare "ffmpeg")
@@ -893,10 +900,16 @@ class Pipeline:
                 if result.returncode != 0:
                     error_msg = (result.stderr or result.stdout or "Unknown error").strip()
                     raise RuntimeError(f"yt-dlp failed: {error_msg}")
+                # First line of stdout is the title (from --print)
+                title_line = (result.stdout or "").strip().split("\n")[0].strip()
+                if title_line:
+                    self.video_title = title_line
             except RuntimeError:
                 raise
             except Exception as e:
                 raise RuntimeError(f"yt-dlp failed: {e}") from e
+
+            self._report("download", 0.9, f"Downloaded: {self.video_title}")
 
             # Find downloaded file
             mp4 = list(self.cfg.work_dir.glob("source.mp4"))
@@ -917,16 +930,35 @@ class Pipeline:
 
     # ── Step 2: Extract audio ────────────────────────────────────────────
     def _extract_audio(self, video_path: Path) -> Path:
+        """Extract audio from video. Creates both full-quality and lightweight versions.
+        Full-quality (48kHz stereo) for final mix, lightweight (16kHz mono) for transcription."""
+        from concurrent.futures import ThreadPoolExecutor
+
         wav = self.cfg.work_dir / "audio_raw.wav"
-        subprocess.run(
-            [
-                self._ffmpeg, "-y", "-i", str(video_path),
-                "-vn", "-ac", str(self.N_CHANNELS), "-ar", str(self.SAMPLE_RATE),
-                "-acodec", "pcm_s16le", str(wav),
-            ],
-            check=True,
-            capture_output=True,
-        )
+        wav_16k = self.cfg.work_dir / "audio_16k.wav"
+
+        def extract_full():
+            subprocess.run(
+                [self._ffmpeg, "-y", "-i", str(video_path),
+                 "-vn", "-ac", str(self.N_CHANNELS), "-ar", str(self.SAMPLE_RATE),
+                 "-acodec", "pcm_s16le", str(wav)],
+                check=True, capture_output=True,
+            )
+
+        def extract_16k():
+            subprocess.run(
+                [self._ffmpeg, "-y", "-i", str(video_path),
+                 "-vn", "-ac", "1", "-ar", "16000",
+                 "-acodec", "pcm_s16le", str(wav_16k)],
+                check=True, capture_output=True,
+            )
+
+        # Extract both in parallel — saves ~50% extraction time
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pool.submit(extract_full)
+            pool.submit(extract_16k)
+
+        self._whisper_audio = wav_16k  # Lightweight file for transcription
         return wav
 
     # ── Step 3a: Fetch YouTube subtitles (skip Whisper if available) ─────
@@ -1064,7 +1096,136 @@ class Pipeline:
 
     # ── Step 3b: Transcribe speech from audio ─────────────────────────────
     def _transcribe(self, wav_path: Path) -> List[Dict]:
-        """Transcribe speech from audio using Whisper (picks up only spoken words)."""
+        """Transcribe speech from audio — tries Groq Whisper API first (30x faster),
+        falls back to local faster-whisper if no API key or API fails."""
+        groq_key = os.environ.get("GROQ_API_KEY", "").strip()
+        if groq_key:
+            try:
+                return self._transcribe_groq(wav_path, groq_key)
+            except Exception as e:
+                self._report("transcribe", 0.1, f"Groq Whisper failed ({e}), using local model...")
+
+        return self._transcribe_local(wav_path)
+
+    def _transcribe_groq(self, wav_path: Path, api_key: str) -> List[Dict]:
+        """Transcribe using Groq Whisper API — ~25s per hour of audio.
+        Handles files >25MB by chunking into smaller pieces."""
+        import requests as _requests
+
+        self._report("transcribe", 0.1, "Using Groq Whisper API (cloud, ultra-fast)...")
+
+        # Groq has a 25MB file limit — check if we need to chunk
+        file_size_mb = wav_path.stat().st_size / (1024 * 1024)
+
+        if file_size_mb <= 24:
+            # Single file upload
+            return self._groq_whisper_single(wav_path, api_key)
+
+        # Large file: split into chunks and transcribe each
+        self._report("transcribe", 0.1,
+                     f"Audio is {file_size_mb:.0f}MB — splitting into chunks for Groq API...")
+        return self._groq_whisper_chunked(wav_path, api_key)
+
+    def _groq_whisper_single(self, audio_path: Path, api_key: str) -> List[Dict]:
+        """Send a single file to Groq Whisper API."""
+        import requests as _requests
+
+        url = "https://api.groq.com/openai/v1/audio/transcriptions"
+        headers = {"Authorization": f"Bearer {api_key}"}
+
+        data = {
+            "model": "whisper-large-v3",
+            "response_format": "verbose_json",
+            "timestamp_granularities[]": "segment",
+        }
+        if self.cfg.source_language and self.cfg.source_language != "auto":
+            data["language"] = self.cfg.source_language
+
+        with open(audio_path, "rb") as f:
+            resp = _requests.post(
+                url, headers=headers,
+                data=data,
+                files={"file": (audio_path.name, f, "audio/wav")},
+                timeout=300,
+            )
+        resp.raise_for_status()
+        result = resp.json()
+
+        segments = []
+        for seg in result.get("segments", []):
+            entry = {
+                "start": float(seg["start"]),
+                "end": float(seg["end"]),
+                "text": seg["text"].strip(),
+            }
+            segments.append(entry)
+
+        self._report("transcribe", 0.95,
+                     f"Groq Whisper: {len(segments)} segments transcribed")
+        return segments
+
+    def _groq_whisper_chunked(self, wav_path: Path, api_key: str) -> List[Dict]:
+        """Split large audio into ~10min chunks, transcribe each via Groq API in parallel."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        # Split into 10-minute chunks (mono 16kHz = ~19MB per 10min)
+        chunk_duration = 600  # 10 minutes in seconds
+        total_duration = self._get_duration(wav_path)
+        num_chunks = math.ceil(total_duration / chunk_duration)
+
+        self._report("transcribe", 0.15,
+                     f"Splitting into {num_chunks} chunks ({chunk_duration//60}min each)...")
+
+        # Create chunks using ffmpeg
+        chunk_paths = []
+        for i in range(num_chunks):
+            start_time = i * chunk_duration
+            chunk_path = self.cfg.work_dir / f"whisper_chunk_{i:03d}.wav"
+            subprocess.run(
+                [self._ffmpeg, "-y", "-i", str(wav_path),
+                 "-ss", str(start_time), "-t", str(chunk_duration),
+                 "-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le",
+                 str(chunk_path)],
+                check=True, capture_output=True,
+            )
+            chunk_paths.append((i, start_time, chunk_path))
+
+        # Transcribe chunks in parallel (up to 4 concurrent API calls)
+        all_segments = []
+        completed = 0
+
+        def transcribe_chunk(args):
+            idx, offset, path = args
+            segs = self._groq_whisper_single(path, api_key)
+            # Adjust timestamps by chunk offset
+            for seg in segs:
+                seg["start"] += offset
+                seg["end"] += offset
+            return idx, segs
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(transcribe_chunk, cp): cp[0] for cp in chunk_paths}
+            for fut in as_completed(futures):
+                idx, segs = fut.result()
+                all_segments.append((idx, segs))
+                completed += 1
+                self._report("transcribe", 0.15 + 0.8 * (completed / num_chunks),
+                             f"Transcribed chunk {completed}/{num_chunks} via Groq API...")
+
+        # Sort by chunk index and flatten
+        all_segments.sort(key=lambda x: x[0])
+        segments = []
+        for _, segs in all_segments:
+            segments.extend(segs)
+
+        # Clean up chunk files
+        for _, _, path in chunk_paths:
+            path.unlink(missing_ok=True)
+
+        return segments
+
+    def _transcribe_local(self, wav_path: Path) -> List[Dict]:
+        """Transcribe speech from audio using local faster-whisper (GPU/CPU)."""
         from faster_whisper import WhisperModel
 
         # Auto-detect GPU: use CUDA if available, else fall back to CPU
@@ -1080,8 +1241,6 @@ class Pipeline:
         model = WhisperModel(self.cfg.asr_model, device=device, compute_type=compute)
 
         self._report("transcribe", 0.2, "Transcribing audio with word timestamps...")
-        # Pass language hint if source language is specified (not auto)
-        # beam_size=1 + best_of=1 = greedy decoding (much faster, minimal quality loss)
         transcribe_kwargs = {
             "vad_filter": True,
             "word_timestamps": True,
@@ -1104,7 +1263,6 @@ class Pipeline:
                 "end": float(seg.end),
                 "text": seg.text.strip(),
             }
-            # Word-level timestamps for fine-grained alignment
             if hasattr(seg, "words") and seg.words:
                 entry["words"] = [
                     {"word": w.word.strip(), "start": float(w.start), "end": float(w.end)}
@@ -1545,25 +1703,21 @@ class Pipeline:
         engines = []
         groq_key = os.environ.get("GROQ_API_KEY", "").strip()
         sambanova_key = os.environ.get("SAMBANOVA_API_KEY", "").strip()
-        together_key = os.environ.get("TOGETHER_API_KEY", "").strip()
         if groq_key:
             engines.append(("Groq", groq_key))
         if sambanova_key:
             engines.append(("SambaNova", sambanova_key))
-        if together_key:
-            engines.append(("Together", together_key))
         return engines
 
     def _translate_segments(self, segments):
         """Translate each segment individually, preserving timestamps for sync.
 
         Respects self.cfg.translation_engine setting.
-        Turbo mode: Groq + SambaNova + Together AI in parallel (all Llama 3.3 70B).
+        Turbo mode: Groq + SambaNova in parallel (both Llama 3.3 70B).
         """
         openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
         groq_key = os.environ.get("GROQ_API_KEY", "").strip()
         sambanova_key = os.environ.get("SAMBANOVA_API_KEY", "").strip()
-        together_key = os.environ.get("TOGETHER_API_KEY", "").strip()
         gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
         engine = self.cfg.translation_engine
 
@@ -1584,10 +1738,6 @@ class Pipeline:
         elif engine == "sambanova" and sambanova_key:
             self._report("translate", 0.05, "Using SambaNova (Llama 3.3 70B) for translation...")
             self._translate_segments_sambanova(segments, sambanova_key)
-            return
-        elif engine == "together" and together_key:
-            self._report("translate", 0.05, "Using Together AI (Llama 3.3 70B) for translation...")
-            self._translate_segments_together(segments, together_key)
             return
         elif engine == "groq" and groq_key:
             self._report("translate", 0.05, "Using Groq (Llama 3.3 70B) for translation...")
@@ -1762,7 +1912,6 @@ class Pipeline:
     TURBO_ENGINE_CONFIG = {
         "Groq": ("https://api.groq.com/openai/v1/chat/completions", "llama-3.3-70b-versatile"),
         "SambaNova": ("https://api.sambanova.ai/v1/chat/completions", "Meta-Llama-3.3-70B-Instruct"),
-        "Together": ("https://api.together.xyz/v1/chat/completions", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
     }
 
     def _translate_segments_sambanova(self, segments, api_key):
@@ -1788,34 +1937,11 @@ class Pipeline:
             self._report("translate", 0.1 + 0.9 * ((batch_idx + 1) / total_batches),
                          f"Translated batch {batch_idx + 1}/{total_batches} (SambaNova)")
 
-    def _translate_segments_together(self, segments, api_key):
-        """Translate segments using Together AI (Llama 3.3 70B) — free credits."""
-        url, model = self.TURBO_ENGINE_CONFIG["Together"]
-        batch_size = 50
-        total_batches = (len(segments) + batch_size - 1) // batch_size
-
-        for batch_idx in range(total_batches):
-            start = batch_idx * batch_size
-            end = min(start + batch_size, len(segments))
-            batch = segments[start:end]
-
-            translations = self._translate_batch_openai_compat(batch, url, api_key, model, "Together")
-            if translations:
-                for i, seg in enumerate(batch):
-                    seg["text_translated"] = translations[i] if translations[i] else seg["text"]
-            else:
-                self._report("translate", 0.1, "Together failed, using Google Translate for batch...")
-                for seg in batch:
-                    seg["text_translated"] = self._translate_single_google(seg["text"])
-
-            self._report("translate", 0.1 + 0.9 * ((batch_idx + 1) / total_batches),
-                         f"Translated batch {batch_idx + 1}/{total_batches} (Together)")
-
     def _translate_segments_turbo(self, segments, engines):
         """TURBO: Distribute batches across multiple engines in parallel.
 
-        Round-robin batches across all available engines (Groq, SambaNova, Together).
-        All run simultaneously via threads = up to 3x faster translation.
+        Round-robin batches across all available engines (Groq, SambaNova).
+        All run simultaneously via threads = up to 2x faster translation.
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -2996,7 +3122,7 @@ class Pipeline:
         import edge_tts
         default_voice = self.cfg.tts_voice
         rate = self.cfg.tts_rate
-        concurrency = 40  # Process 40 segments simultaneously
+        concurrency = 80  # Process 80 segments simultaneously
 
         async def generate_one(i, seg, semaphore):
             text = seg.get("text_translated", seg.get("text", "")).strip()
@@ -3034,16 +3160,20 @@ class Pipeline:
 
         asyncio.run(generate_all())
 
-        # Parallel MP3→WAV conversion (8 threads = ~8x faster than sequential)
+        # Parallel MP3→WAV + 1.25x speedup in ONE ffmpeg call (eliminates separate speedup step)
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        def convert_one(i, seg):
+        TTS_SPEED = 1.25
+
+        def convert_and_speed(i, seg):
             mp3 = seg.pop("_tts_mp3", None)
             if not mp3 or not mp3.exists():
                 return None
             wav = self.cfg.work_dir / f"tts_{i:04d}.wav"
+            # Single ffmpeg: MP3→WAV + resample + 1.25x speed in one pass
             subprocess.run(
                 [self._ffmpeg, "-y", "-i", str(mp3),
+                 "-af", f"atempo={TTS_SPEED}",
                  "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
                  str(wav)],
                 check=True, capture_output=True,
@@ -3056,11 +3186,12 @@ class Pipeline:
                 "wav": wav,
                 "duration": tts_dur,
                 "_order": i,
+                "_already_sped": True,
             }
 
         tts_data = []
         with ThreadPoolExecutor(max_workers=8) as pool:
-            futures = {pool.submit(convert_one, i, seg): i for i, seg in enumerate(segments)}
+            futures = {pool.submit(convert_and_speed, i, seg): i for i, seg in enumerate(segments)}
             for fut in as_completed(futures):
                 result = fut.result()
                 if result:

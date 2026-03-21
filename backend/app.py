@@ -506,7 +506,7 @@ def _job_config(job: Job) -> Dict[str, Any]:
     tts = "Chatterbox" if req.use_chatterbox else "ElevenLabs" if req.use_elevenlabs else "Coqui XTTS" if req.use_coqui_xtts else "Google TTS" if req.use_google_tts else "Edge-TTS" if req.use_edge_tts else "Edge-TTS"
     engine_labels = {
         "auto": "Auto", "turbo": "Turbo (Multi-Engine)", "gemini": "Gemini",
-        "groq": "Groq", "sambanova": "SambaNova", "together": "Together AI",
+        "groq": "Groq", "sambanova": "SambaNova",
         "ollama": "Ollama", "google": "Google Translate", "hinglish": "Hinglish AI",
     }
     return {
