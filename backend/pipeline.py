@@ -922,9 +922,12 @@ class Pipeline:
                 if ffmpeg_path.is_absolute():
                     dl_cmd += ["--ffmpeg-location", str(ffmpeg_path.parent)]
                 dl_cmd += cookies_args + js_args + [src]
+                print(f"[YTDLP] cmd: {dl_cmd}", flush=True)
                 result = subprocess.run(dl_cmd, capture_output=True, text=True)
+                print(f"[YTDLP] rc={result.returncode} stdout_len={len(result.stdout or '')} stderr_len={len(result.stderr or '')}", flush=True)
                 if result.returncode != 0:
                     error_msg = (result.stderr or result.stdout or "Unknown error").strip()
+                    print(f"[YTDLP] error: {error_msg[:500]}", flush=True)
                     raise RuntimeError(f"yt-dlp failed: {error_msg}")
             except RuntimeError:
                 raise

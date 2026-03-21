@@ -109,6 +109,8 @@ STEP_WEIGHTS = {
 
 JOBS: Dict[str, Job] = {}
 MAX_JOBS = 200
+# Only run one pipeline at a time to avoid resource contention
+_pipeline_semaphore = threading.Semaphore(1)
 BASE_DIR = Path(__file__).resolve().parent
 WORK_ROOT = BASE_DIR / "work"
 OUTPUTS = WORK_ROOT / "outputs"
@@ -292,6 +294,8 @@ def _make_progress_callback(job: Job):
 
 def _run_job(job: Job, req: JobCreateRequest):
     """Run the dubbing pipeline in a background thread."""
+    job.message = "Waiting in queue..."
+    _pipeline_semaphore.acquire()
     try:
         job.state = "running"
         job.message = "Starting..."
@@ -384,6 +388,8 @@ def _run_job(job: Job, req: JobCreateRequest):
         job.error = str(e)
         job.message = f"Error: {e}"
         job.events.append({"type": "complete", "state": "error", "error": str(e)})
+    finally:
+        _pipeline_semaphore.release()
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -682,6 +688,8 @@ def get_source_srt(job_id: str):
 
 def _run_resume(job: Job):
     """Resume pipeline from uploaded translated SRT in a background thread."""
+    job.message = "Waiting in queue..."
+    _pipeline_semaphore.acquire()
     try:
         job.state = "running"
         job.message = "Resuming from uploaded SRT..."
@@ -760,6 +768,8 @@ def _run_resume(job: Job):
         job.error = str(e)
         job.message = f"Error: {e}"
         job.events.append({"type": "complete", "state": "error", "error": str(e)})
+    finally:
+        _pipeline_semaphore.release()
 
 
 @app.post("/api/jobs/{job_id}/resume-with-srt")
