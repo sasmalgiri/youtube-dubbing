@@ -7,7 +7,7 @@ import LanguageSelector, { LANGUAGES } from '@/components/LanguageSelector';
 import SettingsPanel, { type DubbingSettings } from '@/components/SettingsPanel';
 import JobCard from '@/components/JobCard';
 import SavedLinks from '@/components/SavedLinks';
-import { createJob, createJobUpload, localDownloadAndDub, isRemoteBackend, getJobs, type JobStatus } from '@/lib/api';
+import { createJob, createJobUpload, localDownloadAndDub, isRemoteBackend, getJobs, addLink, type JobStatus } from '@/lib/api';
 
 
 export default function HomePage() {
@@ -51,6 +51,9 @@ export default function HomePage() {
         setSubmitting(true);
         setError(null);
         try {
+            // Auto-save URL to saved links
+            addLink(url).catch(() => {});
+
             const jobSettings = {
                 source_language: sourceLanguage,
                 target_language: targetLanguage,
@@ -87,6 +90,9 @@ export default function HomePage() {
     }, [sourceLanguage, targetLanguage, settings, router]);
 
     const handleBatchSubmit = useCallback((urls: string[]) => {
+        // Auto-save all batch URLs
+        urls.forEach(u => addLink(u).catch(() => {}));
+
         sessionStorage.setItem('batch_pending', JSON.stringify({
             urls,
             settings: {
@@ -118,7 +124,7 @@ export default function HomePage() {
 
                     {/* Saved Links */}
                     <div className="mt-4">
-                        <SavedLinks currentUrl={currentUrl} onSelect={setCurrentUrl} />
+                        <SavedLinks onSelect={setCurrentUrl} />
                     </div>
 
                     {error && (

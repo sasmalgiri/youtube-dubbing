@@ -1,18 +1,16 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { getLinks, addLink, deleteLink, type SavedLink } from '@/lib/api';
-import { extractYouTubeId, getThumbnailUrl, isValidYouTubeUrl } from '@/lib/utils';
+import { getLinks, deleteLink, type SavedLink } from '@/lib/api';
+import { extractYouTubeId, getThumbnailUrl } from '@/lib/utils';
 
 interface SavedLinksProps {
     onSelect: (url: string) => void;
-    currentUrl?: string;
 }
 
-export default function SavedLinks({ onSelect, currentUrl }: SavedLinksProps) {
+export default function SavedLinks({ onSelect }: SavedLinksProps) {
     const [links, setLinks] = useState<SavedLink[]>([]);
     const [open, setOpen] = useState(false);
-    const [adding, setAdding] = useState(false);
 
     const loadLinks = useCallback(() => {
         getLinks().then(setLinks).catch(() => {});
@@ -20,20 +18,16 @@ export default function SavedLinks({ onSelect, currentUrl }: SavedLinksProps) {
 
     useEffect(() => { loadLinks(); }, [loadLinks]);
 
-    const handleSaveCurrentUrl = useCallback(async () => {
-        if (!currentUrl || !isValidYouTubeUrl(currentUrl)) return;
-        setAdding(true);
-        const updated = await addLink(currentUrl);
-        setLinks(updated);
-        setAdding(false);
-    }, [currentUrl]);
+    // Refresh links periodically to pick up auto-saved ones
+    useEffect(() => {
+        const interval = setInterval(loadLinks, 5000);
+        return () => clearInterval(interval);
+    }, [loadLinks]);
 
     const handleDelete = useCallback(async (id: string) => {
         const updated = await deleteLink(id);
         setLinks(updated);
     }, []);
-
-    const alreadySaved = currentUrl ? links.some(l => l.url === currentUrl) : false;
 
     return (
         <div className="glass-card overflow-hidden">
@@ -65,22 +59,6 @@ export default function SavedLinks({ onSelect, currentUrl }: SavedLinksProps) {
 
             {open && (
                 <div className="border-t border-border">
-                    {/* Save current URL button */}
-                    {currentUrl && isValidYouTubeUrl(currentUrl) && !alreadySaved && (
-                        <div className="p-3 border-b border-border/50">
-                            <button
-                                onClick={handleSaveCurrentUrl}
-                                disabled={adding}
-                                className="w-full text-sm py-2 px-3 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center justify-center gap-2"
-                            >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                    <path d="M12 5v14M5 12h14" />
-                                </svg>
-                                {adding ? 'Saving...' : 'Save current URL'}
-                            </button>
-                        </div>
-                    )}
-
                     {/* Links list */}
                     {links.length === 0 ? (
                         <div className="p-4 text-center text-sm text-text-muted">
