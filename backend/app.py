@@ -388,6 +388,10 @@ def _run_job(job: Job, req: JobCreateRequest):
         job.message = "Complete"
         job.events.append({"type": "complete", "state": "done"})
 
+        # Mark this URL as completed so it won't be re-queued on restart
+        if job.source_url:
+            _mark_url_completed(job.source_url)
+
     except Exception as e:
         import traceback
         try:
@@ -776,6 +780,10 @@ def _run_resume(job: Job):
         job.message = "Complete"
         job.events.append({"type": "complete", "state": "done"})
 
+        # Mark this URL as completed so it won't be re-queued on restart
+        if job.source_url:
+            _mark_url_completed(job.source_url)
+
     except Exception as e:
         import traceback
         try:
@@ -902,6 +910,7 @@ def delete_job(job_id: str):
 # ── Saved Links (persistent) ─────────────────────────────────────────────────
 
 LINKS_FILE = BASE_DIR / "saved_links.json"
+COMPLETED_FILE = BASE_DIR / "completed_urls.json"
 
 
 def _load_links() -> List[Dict]:
@@ -915,6 +924,23 @@ def _load_links() -> List[Dict]:
 
 def _save_links(links: List[Dict]):
     LINKS_FILE.write_text(json.dumps(links, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _load_completed_urls() -> List[str]:
+    if COMPLETED_FILE.exists():
+        try:
+            return json.loads(COMPLETED_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def _mark_url_completed(url: str):
+    """Add a URL to the completed list (persisted to disk)."""
+    urls = _load_completed_urls()
+    if url not in urls:
+        urls.append(url)
+        COMPLETED_FILE.write_text(json.dumps(urls, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _fetch_yt_title(url: str) -> str:
@@ -988,3 +1014,42 @@ def delete_link(link_id: str):
     links = [l for l in links if l["id"] != link_id]
     _save_links(links)
     return {"status": "deleted", "links": links}
+
+
+# ── Auto-resume incomplete links on startup ─────────────────────────────────
+
+def _resume_incomplete_links():
+    """Check saved links vs completed URLs and re-queue incomplete ones."""
+    links = _load_links()
+    completed = set(_load_completed_urls())
+
+    pending = [l for l in links if l["url"] not in completed]
+    if not pending:
+        print("[STARTUP] All saved links already completed.")
+        return
+
+    print(f"[STARTUP] Found {len(pending)} incomplete links, queuing them...")
+    for link in pending:
+        url = link["url"]
+        # Skip if already in the current job queue
+        if any(j.source_url == url and j.state in ("queued", "running") for j in JOBS.values()):
+            print(f"[STARTUP]   Skipping (already queued): {url}")
+            continue
+
+        job_id = uuid.uuid4().hex[:12]
+        req = JobCreateRequest(url=url)
+        job = Job(id=job_id, source_url=url, target_language=req.target_language)
+        job.original_req = req
+        JOBS[job_id] = job
+
+        t = threading.Thread(target=_run_job, args=(job, req), daemon=True)
+        t.start()
+        print(f"[STARTUP]   Queued: {url} -> job {job_id}")
+
+
+# Run auto-resume after a short delay to let the server start
+def _startup_resume():
+    time.sleep(3)
+    _resume_incomplete_links()
+
+threading.Thread(target=_startup_resume, daemon=True).start()
