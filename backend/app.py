@@ -62,6 +62,7 @@ class Job:
     saved_folder: Optional[str] = None  # Path to titled output folder
     saved_video: Optional[str] = None   # Path to saved video file
     description: Optional[str] = None   # YouTube description
+    qa_score: Optional[float] = None    # Transcription QA score (0-1)
 
 
 class JobCreateRequest(BaseModel):
@@ -354,6 +355,7 @@ def _run_job(job: Job, req: JobCreateRequest):
 
         job.video_title = pipeline.video_title or "Untitled"
         job.segments = pipeline.segments
+        job.qa_score = pipeline.qa_score
 
         if req.transcribe_only:
             job.overall_progress = 1.0
@@ -620,6 +622,7 @@ def get_job(job_id: str):
         "saved_folder": job.saved_folder,
         "saved_video": job.saved_video,
         "description": job.description,
+        "qa_score": job.qa_score,
     }
 
 

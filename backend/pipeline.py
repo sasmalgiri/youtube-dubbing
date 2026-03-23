@@ -240,6 +240,7 @@ class Pipeline:
         self._on_progress = on_progress or (lambda *_: None)
         self.segments: List[Dict] = []
         self.video_title: str = ""
+        self.qa_score: Optional[float] = None
         self._voice_map = None
         self._whisper_audio = None  # Lightweight 16kHz mono audio for transcription
         self.cfg.work_dir.mkdir(parents=True, exist_ok=True)
@@ -635,6 +636,25 @@ class Pipeline:
         text_segments = [s for s in self.segments if s.get("text", "").strip()]
         if not text_segments:
             raise RuntimeError("No speech detected in the video")
+
+        # QA: Cross-check Whisper transcription against YouTube English subs
+        if not sub_segments and re.match(r"^https?://", self.cfg.source):
+            self._report("transcribe", 0.85, "Quality check: fetching reference subs...")
+            ref_segments = self._fetch_reference_subs(self.cfg.source)
+            if ref_segments:
+                qa_result = self._qa_check(text_segments, ref_segments)
+                self.qa_score = qa_result["score"]
+                qa_report_path = self.cfg.work_dir / "qa_report.txt"
+                qa_report_path.write_text(qa_result["report"], encoding="utf-8")
+                self._report("transcribe", 0.90,
+                             f"QA: {qa_result['score']:.0%} match ({qa_result['matched']}/{qa_result['total']} segments)")
+                # If Whisper quality is poor and YouTube subs are available, auto-switch
+                if qa_result["score"] < 0.5 and len(ref_segments) >= len(text_segments) * 0.7:
+                    print(f"[QA] Low match ({qa_result['score']:.0%}), switching to YouTube English subs", flush=True)
+                    self.segments = ref_segments
+                    text_segments = [s for s in self.segments if s.get("text", "").strip()]
+                    self._report("transcribe", 0.95,
+                                 f"QA: Auto-switched to YouTube subs (better quality)")
 
         # Multi-speaker diarization (runs within "transcribe" step progress 82-98%)
         self._voice_map = None
@@ -1146,6 +1166,199 @@ class Pipeline:
                     return segments
 
         return None
+
+    def _fetch_reference_subs(self, url: str) -> Optional[List[Dict]]:
+        """Fetch English reference subs: try YouTube subs first, then OCR burned-in subs."""
+        # 1. Try YouTube subtitle download
+        if re.match(r"^https?://", url):
+            cookies_args = self._get_cookies_args()
+            ref_dir = self.cfg.work_dir / "ref_subs"
+            ref_dir.mkdir(exist_ok=True)
+            out_tpl = str(ref_dir / "ref.%(ext)s")
+
+            for write_flag in ["--write-sub", "--write-auto-sub"]:
+                for f in ref_dir.glob("*"):
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
+                cmd = [
+                    self._ytdlp, write_flag,
+                    "--sub-lang", "en",
+                    "--sub-format", "vtt/srt/best",
+                    "--skip-download",
+                    "-o", out_tpl,
+                ] + cookies_args + [url]
+                try:
+                    subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                except Exception:
+                    continue
+                for vtt_file in ref_dir.glob("*.vtt"):
+                    segments = self._parse_vtt(vtt_file)
+                    if segments:
+                        return segments
+                for srt_file in ref_dir.glob("*.srt"):
+                    segments = self._parse_srt_file(srt_file)
+                    if segments:
+                        return segments
+
+        # 2. Fallback: OCR burned-in subtitles from video frames
+        video_path = self._find_source_video()
+        if video_path:
+            ocr_segs = self._ocr_burned_subs(video_path)
+            if ocr_segs:
+                return ocr_segs
+
+        return None
+
+    def _find_source_video(self) -> Optional[Path]:
+        """Find the downloaded source video in work directory."""
+        for ext in ("mp4", "mkv", "webm", "avi"):
+            for f in self.cfg.work_dir.glob(f"source.{ext}"):
+                return f
+        return None
+
+    def _ocr_burned_subs(self, video_path: Path, sample_interval: float = 1.0) -> Optional[List[Dict]]:
+        """Extract burned-in English subtitles from video using OCR on sampled frames."""
+        try:
+            import pytesseract
+            from PIL import Image
+        except ImportError:
+            print("[OCR] pytesseract or Pillow not installed, skipping OCR", flush=True)
+            return None
+
+        print(f"[OCR] Extracting burned-in subs from {video_path.name}...", flush=True)
+        frames_dir = self.cfg.work_dir / "ocr_frames"
+        frames_dir.mkdir(exist_ok=True)
+
+        # Get video duration
+        try:
+            dur_result = subprocess.run(
+                [self._ffmpeg, "-i", str(video_path)],
+                capture_output=True, text=True, timeout=10,
+            )
+            dur_match = re.search(r"Duration:\s*(\d+):(\d+):(\d+)\.(\d+)", dur_result.stderr)
+            if dur_match:
+                h, m, s, cs = [int(x) for x in dur_match.groups()]
+                total_dur = h * 3600 + m * 60 + s + cs / 100
+            else:
+                total_dur = 600  # default 10 min
+        except Exception:
+            total_dur = 600
+
+        # Sample frames (bottom 25% where subs usually are)
+        # Extract 1 frame per second for first 5 min, then every 2s
+        max_frames = min(int(total_dur / sample_interval), 600)
+        subprocess.run(
+            [self._ffmpeg, "-y", "-i", str(video_path),
+             "-vf", f"fps=1/{sample_interval},crop=iw:ih/4:0:ih*3/4",
+             "-frames:v", str(max_frames),
+             str(frames_dir / "frame_%04d.png")],
+            capture_output=True, timeout=300,
+        )
+
+        # OCR each frame
+        raw_texts = []  # list of (timestamp, text)
+        frame_files = sorted(frames_dir.glob("frame_*.png"))
+        print(f"[OCR] Processing {len(frame_files)} frames...", flush=True)
+
+        for i, frame_file in enumerate(frame_files):
+            timestamp = i * sample_interval
+            try:
+                img = Image.open(frame_file)
+                text = pytesseract.image_to_string(img, lang="eng").strip()
+                # Clean up OCR noise
+                text = re.sub(r'\s+', ' ', text).strip()
+                if len(text) > 3:  # skip noise/empty
+                    raw_texts.append((timestamp, text))
+            except Exception:
+                pass
+
+        # Clean up frames
+        import shutil
+        shutil.rmtree(frames_dir, ignore_errors=True)
+
+        if not raw_texts:
+            print("[OCR] No text found in video frames", flush=True)
+            return None
+
+        # Group consecutive identical texts into segments
+        segments = []
+        prev_text = None
+        seg_start = 0.0
+        for ts, text in raw_texts:
+            if text != prev_text:
+                if prev_text:
+                    segments.append({
+                        "start": seg_start,
+                        "end": ts,
+                        "text": prev_text,
+                    })
+                seg_start = ts
+                prev_text = text
+        # Last segment
+        if prev_text:
+            segments.append({
+                "start": seg_start,
+                "end": raw_texts[-1][0] + sample_interval,
+                "text": prev_text,
+            })
+
+        print(f"[OCR] Extracted {len(segments)} subtitle segments from video", flush=True)
+        return segments if segments else None
+
+    def _qa_check(self, whisper_segs: List[Dict], ref_segs: List[Dict]) -> Dict:
+        """Compare Whisper transcription against reference subs. Returns QA report."""
+        from difflib import SequenceMatcher
+
+        # Build time-indexed lookup for reference segments
+        matched = 0
+        total = 0
+        report_lines = ["=== Transcription QA Report ===\n"]
+
+        for w_seg in whisper_segs:
+            w_text = w_seg.get("text", "").strip()
+            if not w_text:
+                continue
+            total += 1
+            w_start = w_seg.get("start", 0)
+            w_end = w_seg.get("end", 0)
+
+            # Find best overlapping reference segment
+            best_ratio = 0.0
+            best_ref = ""
+            for r_seg in ref_segs:
+                r_start = r_seg.get("start", 0)
+                r_end = r_seg.get("end", 0)
+                # Check time overlap (within 2s tolerance)
+                overlap = min(w_end, r_end) - max(w_start, r_start)
+                if overlap > -2.0:
+                    r_text = r_seg.get("text", "").strip()
+                    ratio = SequenceMatcher(None, w_text.lower(), r_text.lower()).ratio()
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_ref = r_text
+
+            status = "OK" if best_ratio >= 0.6 else "MISMATCH" if best_ref else "NO_REF"
+            if best_ratio >= 0.6:
+                matched += 1
+
+            report_lines.append(
+                f"[{w_start:.1f}-{w_end:.1f}] {status} ({best_ratio:.0%})\n"
+                f"  Whisper: {w_text[:100]}\n"
+                f"  RefSub:  {best_ref[:100]}\n"
+            )
+
+        score = matched / total if total > 0 else 0.0
+        summary = f"\nSummary: {matched}/{total} segments matched ({score:.0%})\n"
+        report_lines.insert(1, summary)
+
+        return {
+            "score": score,
+            "matched": matched,
+            "total": total,
+            "report": "\n".join(report_lines),
+        }
 
     # ── Step 3b: Transcribe speech from audio ─────────────────────────────
     def _transcribe(self, wav_path: Path) -> List[Dict]:
