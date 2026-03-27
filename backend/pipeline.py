@@ -376,12 +376,13 @@ class PipelineConfig:
     output_path: Path
     source_language: str = "auto"
     target_language: str = "hi"
-    asr_model: str = "medium"
+    asr_model: str = "large-v3-turbo"
     translation_engine: str = "auto"   # auto, gemini, groq, ollama, google, hinglish, nllb, nllb_polish, google_polish
     tts_voice: str = "hi-IN-SwaraNeural"
     tts_rate: str = "+0%"
     mix_original: bool = False
     original_volume: float = 0.10
+    use_cosyvoice: bool = True
     use_chatterbox: bool = False
     use_elevenlabs: bool = False
     use_google_tts: bool = False
@@ -4080,6 +4081,18 @@ class Pipeline:
         """
         target = self.cfg.target_language
 
+        # Priority: CosyVoice 2 → Chatterbox (EN) → ElevenLabs → XTTS v2 → Google → Edge TTS
+        if self.cfg.use_cosyvoice:
+            try:
+                import torch
+                if not torch.cuda.is_available():
+                    raise RuntimeError("No CUDA GPU available")
+                self._report("synthesize", 0.05, "Using CosyVoice 2 (GPU, near-ElevenLabs quality, voice cloning)...")
+                return self._tts_cosyvoice2(segments)
+            except Exception as e:
+                self._report("synthesize", 0.05,
+                             f"CosyVoice 2 failed ({e}) — falling back...")
+
         if self.cfg.use_chatterbox:
             if target in self.CHATTERBOX_SUPPORTED_LANGS:
                 try:
@@ -4304,6 +4317,114 @@ class Pipeline:
         finally:
             del model
             torch.cuda.empty_cache()
+
+        return tts_data
+
+    def _tts_cosyvoice2(self, segments):
+        """Generate TTS using CosyVoice 2 — near-ElevenLabs quality, completely free.
+
+        Uses cross-lingual voice cloning:
+        - Takes first 10 sec of original English audio as voice reference
+        - Extracts speaker tone/pitch/style from that reference
+        - Generates Hindi (or any target language) speech with the same voice
+
+        Install: git clone https://github.com/FunAudioLLM/CosyVoice
+                 pip install -r CosyVoice/requirements.txt
+        """
+        try:
+            from cosyvoice.cli.cosyvoice import CosyVoice2
+            from cosyvoice.utils.file_utils import load_wav as cosyvoice_load_wav
+        except ImportError:
+            raise RuntimeError(
+                "CosyVoice 2 not installed. "
+                "Run: git clone https://github.com/FunAudioLLM/CosyVoice && "
+                "pip install -r CosyVoice/requirements.txt"
+            )
+
+        import torch
+        import torchaudio
+
+        # ── Prepare 16kHz mono voice reference (CosyVoice 2 requires 16kHz) ──
+        ref_16k = self.cfg.work_dir / "cosyvoice_ref_16k.wav"
+        audio_raw = self.cfg.work_dir / "audio_raw.wav"
+        if not ref_16k.exists() and audio_raw.exists():
+            subprocess.run(
+                [self._ffmpeg, "-y", "-i", str(audio_raw),
+                 "-t", "10", "-ar", "16000", "-ac", "1", str(ref_16k)],
+                check=True, capture_output=True,
+            )
+        if not ref_16k.exists():
+            raise RuntimeError("No voice reference available for CosyVoice 2")
+
+        # ── Load model ────────────────────────────────────────────────────────
+        self._report("synthesize", 0.02, "Loading CosyVoice 2 model (0.5B, first run downloads ~1GB)...")
+
+        # Try local first, then HuggingFace
+        model_path = Path(__file__).parent / "pretrained_models" / "CosyVoice2-0.5B"
+        if not model_path.exists():
+            model_path = "FunAudioLLM/CosyVoice2-0.5B"  # HF hub ID
+
+        tts_model = CosyVoice2(str(model_path), load_jit=False, load_trt=False)
+        prompt_speech = cosyvoice_load_wav(str(ref_16k), 16000)
+
+        tts_data = []
+        total = len(segments)
+        try:
+            for i, seg in enumerate(segments):
+                text = seg.get("text_translated", seg.get("text", "")).strip()
+                if not text:
+                    continue
+
+                wav_path = self.cfg.work_dir / f"tts_{i:04d}.wav"
+                try:
+                    # Cross-lingual: English voice reference → target language output
+                    chunks = []
+                    for _, result in tts_model.inference_cross_lingual(
+                        text, prompt_speech, stream=False
+                    ):
+                        chunks.append(result["tts_speech"])
+
+                    if not chunks:
+                        continue
+
+                    audio = torch.cat(chunks, dim=-1)
+                    torchaudio.save(str(wav_path), audio, tts_model.sample_rate)
+
+                    # Resample to pipeline sample rate
+                    if tts_model.sample_rate != self.SAMPLE_RATE:
+                        resampled = wav_path.with_suffix(".rs.wav")
+                        subprocess.run(
+                            [self._ffmpeg, "-y", "-i", str(wav_path),
+                             "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
+                             str(resampled)],
+                            check=True, capture_output=True,
+                        )
+                        wav_path.unlink(missing_ok=True)
+                        resampled.rename(wav_path)
+
+                    self._enhance_tts_wav(wav_path)
+
+                except Exception as e:
+                    self._report("synthesize", 0.1 + 0.8 * ((i + 1) / total),
+                                 f"CosyVoice2 error seg {i+1}: {e}, skipping...")
+                    continue
+
+                if not wav_path.exists() or wav_path.stat().st_size == 0:
+                    continue
+
+                tts_dur = self._get_duration(wav_path)
+                tts_data.append({
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "wav": wav_path,
+                    "duration": tts_dur,
+                })
+                self._report("synthesize", 0.1 + 0.8 * ((i + 1) / total),
+                             f"CosyVoice2: {i+1}/{total} segments (voice cloned)...")
+        finally:
+            del tts_model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         return tts_data
 

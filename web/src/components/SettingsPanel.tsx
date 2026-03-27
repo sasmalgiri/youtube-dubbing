@@ -8,6 +8,7 @@ export interface DubbingSettings {
     tts_rate: string;
     mix_original: boolean;
     original_volume: number;
+    use_cosyvoice: boolean;
     use_chatterbox: boolean;
     use_elevenlabs: boolean;
     use_google_tts: boolean;
@@ -67,11 +68,13 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                         <div className="space-y-3">
                             <div>
                                 <p className="text-xs text-text-muted mb-1.5">Whisper Model</p>
-                                <div className="grid grid-cols-3 gap-2">
+                                <div className="grid grid-cols-5 gap-1.5">
                                     {[
-                                        { value: 'base', label: 'Base', desc: 'Fast, basic' },
-                                        { value: 'medium', label: 'Medium', desc: 'Balanced' },
-                                        { value: 'large-v3', label: 'Large-v3', desc: 'Best quality' },
+                                        { value: 'base',          label: 'Base',    desc: 'Fastest' },
+                                        { value: 'small',         label: 'Small',   desc: 'Fast' },
+                                        { value: 'medium',        label: 'Medium',  desc: 'Balanced' },
+                                        { value: 'large-v3-turbo',label: 'Turbo',   desc: 'Fast+accurate' },
+                                        { value: 'large-v3',      label: 'Large-v3',desc: 'Best' },
                                     ].map((m) => (
                                         <button
                                             key={m.value}
@@ -97,7 +100,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                                     <p className="text-xs text-text-muted">Skip Whisper, use existing subs (faster)</p>
                                 </div>
                                 <button
-                                    onClick={() => update({ prefer_youtube_subs: !settings.prefer_youtube_subs })}
+                                    type="button" title="Toggle YouTube Subtitles" onClick={() => update({ prefer_youtube_subs: !settings.prefer_youtube_subs })}
                                     className={`
                                         w-11 h-6 rounded-full transition-colors relative
                                         ${settings.prefer_youtube_subs ? 'bg-primary' : 'bg-white/10'}
@@ -117,7 +120,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                                     <p className="text-xs text-text-muted">Use YouTube&apos;s translated subs (skips Whisper + translation)</p>
                                 </div>
                                 <button
-                                    onClick={() => update({ use_yt_translate: !settings.use_yt_translate })}
+                                    type="button" title="Toggle YouTube Translate" onClick={() => update({ use_yt_translate: !settings.use_yt_translate })}
                                     className={`
                                         w-11 h-6 rounded-full transition-colors relative
                                         ${settings.use_yt_translate ? 'bg-primary' : 'bg-white/10'}
@@ -157,7 +160,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                     {/* ── Translation Section ── */}
                     <div>
                         <p className="text-sm font-medium text-text-primary mb-1">Translation Engine</p>
-                        <p className="text-[10px] text-text-muted mb-3">How the transcribed text gets translated. Auto picks the best for Hindi. IndicTrans2+ gives best Hindi quality (local AI + LLM polish + rule cleanup).</p>
+                        <p className="text-[10px] text-text-muted mb-3">How the transcribed text gets translated. Auto picks the best for Hindi. Chain Dub gives highest quality: IndicTrans2+ first, then Turbo engines refine the output (best for long videos).</p>
                         <div className="grid grid-cols-5 gap-2 mb-3">
                             {[
                                 { value: 'auto', label: 'Auto', desc: 'Best available' },
@@ -183,6 +186,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                         </div>
                         <div className="grid grid-cols-4 gap-2">
                             {[
+                                { value: 'chain_dub', label: 'Chain Dub', desc: 'IndicTrans2+ → Turbo refine' },
                                 { value: 'nllb_polish', label: 'IndicTrans2+', desc: 'IndicTrans2 → LLM → Rules' },
                                 { value: 'google_polish', label: 'Google+Polish', desc: 'Fast Google → LLM polish' },
                                 { value: 'nllb', label: 'IndicTrans2', desc: 'Local meaning model' },
@@ -214,7 +218,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                             <p className="text-xs text-text-muted">Get SRT to translate yourself (e.g. with Claude), then upload back</p>
                         </div>
                         <button
-                            onClick={() => update({ transcribe_only: !settings.transcribe_only })}
+                            type="button" title="Toggle Transcribe Only" onClick={() => update({ transcribe_only: !settings.transcribe_only })}
                             className={`
                                 w-11 h-6 rounded-full transition-colors relative
                                 ${settings.transcribe_only ? 'bg-primary' : 'bg-white/10'}
@@ -234,7 +238,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                             <p className="text-xs text-text-muted">Detect speakers & assign distinct voices (needs HF_TOKEN, adds ~30s)</p>
                         </div>
                         <button
-                            onClick={() => update({ multi_speaker: !settings.multi_speaker })}
+                            type="button" title="Toggle Multi-speaker" onClick={() => update({ multi_speaker: !settings.multi_speaker })}
                             className={`
                                 w-11 h-6 rounded-full transition-colors relative
                                 ${settings.multi_speaker ? 'bg-primary' : 'bg-white/10'}
@@ -250,8 +254,23 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                     {/* TTS Engines */}
                     <div>
                         <p className="text-sm font-medium text-text-primary mb-1">TTS Engines</p>
-                        <p className="text-[10px] text-text-muted mb-3">Text-to-speech converts translated text to audio. First enabled engine is used. Chatterbox = most human but English only. Edge-TTS = best for Hindi.</p>
+                        <p className="text-[10px] text-text-muted mb-3">First enabled engine is used as priority. CosyVoice 2 = near-ElevenLabs quality, voice clones original speaker, free GPU. Edge-TTS = reliable fallback.</p>
                         <div className="space-y-3">
+                            {/* CosyVoice 2 */}
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <p className="text-sm text-text-primary">CosyVoice 2 ⭐</p>
+                                    <p className="text-xs text-text-muted">Free, GPU, near-ElevenLabs quality, voice clones original speaker in Hindi</p>
+                                </div>
+                                <button
+                                    type="button"
+                                    title="Toggle CosyVoice 2"
+                                    onClick={() => update({ use_cosyvoice: !settings.use_cosyvoice })}
+                                    className={`w-11 h-6 rounded-full transition-colors relative ${settings.use_cosyvoice ? 'bg-primary' : 'bg-white/10'}`}
+                                >
+                                    <div className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${settings.use_cosyvoice ? 'translate-x-6' : 'translate-x-1'}`} />
+                                </button>
+                            </div>
                             {/* Chatterbox */}
                             <div className="flex items-center justify-between">
                                 <div>
@@ -259,7 +278,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                                     <p className="text-xs text-text-muted">Free, GPU required, most human-like</p>
                                 </div>
                                 <button
-                                    onClick={() => update({ use_chatterbox: !settings.use_chatterbox })}
+                                    type="button" title="Toggle Chatterbox" onClick={() => update({ use_chatterbox: !settings.use_chatterbox })}
                                     className={`
                                         w-11 h-6 rounded-full transition-colors relative
                                         ${settings.use_chatterbox ? 'bg-primary' : 'bg-white/10'}
@@ -279,7 +298,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                                     <p className="text-xs text-text-muted">Paid API, needs ELEVENLABS_API_KEY in .env</p>
                                 </div>
                                 <button
-                                    onClick={() => update({ use_elevenlabs: !settings.use_elevenlabs })}
+                                    type="button" title="Toggle ElevenLabs" onClick={() => update({ use_elevenlabs: !settings.use_elevenlabs })}
                                     className={`
                                         w-11 h-6 rounded-full transition-colors relative
                                         ${settings.use_elevenlabs ? 'bg-primary' : 'bg-white/10'}
@@ -299,7 +318,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                                     <p className="text-xs text-text-muted">Free, GPU required, voice cloning from original speaker</p>
                                 </div>
                                 <button
-                                    onClick={() => update({ use_coqui_xtts: !settings.use_coqui_xtts })}
+                                    type="button" title="Toggle Coqui XTTS v2" onClick={() => update({ use_coqui_xtts: !settings.use_coqui_xtts })}
                                     className={`
                                         w-11 h-6 rounded-full transition-colors relative
                                         ${settings.use_coqui_xtts ? 'bg-primary' : 'bg-white/10'}
@@ -319,7 +338,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                                     <p className="text-xs text-text-muted">Free 1M chars/mo, WaveNet/Neural2 voices, needs GCP credentials</p>
                                 </div>
                                 <button
-                                    onClick={() => update({ use_google_tts: !settings.use_google_tts })}
+                                    type="button" title="Toggle Google TTS" onClick={() => update({ use_google_tts: !settings.use_google_tts })}
                                     className={`
                                         w-11 h-6 rounded-full transition-colors relative
                                         ${settings.use_google_tts ? 'bg-primary' : 'bg-white/10'}
@@ -339,7 +358,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                                     <p className="text-xs text-text-muted">Free, no GPU needed, decent quality</p>
                                 </div>
                                 <button
-                                    onClick={() => update({ use_edge_tts: !settings.use_edge_tts })}
+                                    type="button" title="Toggle Edge TTS" onClick={() => update({ use_edge_tts: !settings.use_edge_tts })}
                                     className={`
                                         w-11 h-6 rounded-full transition-colors relative
                                         ${settings.use_edge_tts ? 'bg-primary' : 'bg-white/10'}
@@ -391,7 +410,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                             <p className="text-xs text-text-muted">Keep original background music (vocals removed) behind dubbed voice</p>
                         </div>
                         <button
-                            onClick={() => update({ mix_original: !settings.mix_original })}
+                            type="button" title="Toggle Mix Original Audio" onClick={() => update({ mix_original: !settings.mix_original })}
                             className={`
                                 w-11 h-6 rounded-full transition-colors relative
                                 ${settings.mix_original ? 'bg-primary' : 'bg-white/10'}
@@ -436,7 +455,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                                 <button
                                     type="button"
                                     title="Toggle audio priority"
-                                    onClick={() => update({ audio_priority: !settings.audio_priority })}
+                                    type="button" title="Toggle Audio Priority" onClick={() => update({ audio_priority: !settings.audio_priority })}
                                     className={`
                                         w-11 h-6 rounded-full transition-colors relative
                                         ${settings.audio_priority ? 'bg-primary' : 'bg-white/10'}
@@ -513,7 +532,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                                 </div>
                                 <button
                                     type="button"
-                                    onClick={() => update({ fast_assemble: !settings.fast_assemble })}
+                                    type="button" title="Toggle Fast Assemble" onClick={() => update({ fast_assemble: !settings.fast_assemble })}
                                     className={`
                                         w-11 h-6 rounded-full transition-colors relative
                                         ${settings.fast_assemble ? 'bg-primary' : 'bg-white/10'}

@@ -129,11 +129,12 @@ class JobCreateRequest(BaseModel):
     tts_rate: str = "+0%"
     mix_original: bool = False
     original_volume: float = 0.10
-    use_chatterbox: bool = True
+    use_cosyvoice: bool = True
+    use_chatterbox: bool = False
     use_elevenlabs: bool = False
     use_google_tts: bool = False
     use_coqui_xtts: bool = False
-    use_edge_tts: bool = False
+    use_edge_tts: bool = True
     prefer_youtube_subs: bool = False
     use_yt_translate: bool = False
     multi_speaker: bool = False
@@ -448,7 +449,7 @@ def _run_job(job: Job, req: JobCreateRequest):
             tts_rate=req.tts_rate,
             mix_original=req.mix_original,
             original_volume=req.original_volume,
-            use_chatterbox=req.use_chatterbox,
+            use_cosyvoice=req.use_cosyvoice, use_chatterbox=req.use_chatterbox,
             use_elevenlabs=req.use_elevenlabs,
             use_google_tts=req.use_google_tts,
             use_coqui_xtts=req.use_coqui_xtts,
@@ -614,7 +615,7 @@ def _run_job_split(job: Job, req: JobCreateRequest, voice: str):
             asr_model=req.asr_model, translation_engine=req.translation_engine,
             tts_voice=voice, tts_rate=req.tts_rate,
             mix_original=req.mix_original, original_volume=req.original_volume,
-            use_chatterbox=req.use_chatterbox, use_elevenlabs=req.use_elevenlabs,
+            use_cosyvoice=req.use_cosyvoice, use_chatterbox=req.use_chatterbox, use_elevenlabs=req.use_elevenlabs,
             use_google_tts=req.use_google_tts, use_coqui_xtts=req.use_coqui_xtts,
             use_edge_tts=req.use_edge_tts, prefer_youtube_subs=False,
             multi_speaker=req.multi_speaker, audio_priority=req.audio_priority,
@@ -678,7 +679,7 @@ def _run_job_split(job: Job, req: JobCreateRequest, voice: str):
             tts_rate=req.tts_rate,
             mix_original=req.mix_original,
             original_volume=req.original_volume,
-            use_chatterbox=req.use_chatterbox,
+            use_cosyvoice=req.use_cosyvoice, use_chatterbox=req.use_chatterbox,
             use_elevenlabs=req.use_elevenlabs,
             use_google_tts=req.use_google_tts,
             use_coqui_xtts=req.use_coqui_xtts,
@@ -749,8 +750,9 @@ def _queue_chain_next(parent_job: Job):
         source_language=parent_job.target_language,  # Previous output language
         target_language=next_lang,
         prefer_youtube_subs=False,  # No YouTube subs for local file
-        use_chatterbox=parent_job.original_req.use_chatterbox if parent_job.original_req else True,
-        use_edge_tts=parent_job.original_req.use_edge_tts if parent_job.original_req else False,
+        use_cosyvoice=parent_job.original_req.use_cosyvoice if parent_job.original_req else True,
+        use_chatterbox=parent_job.original_req.use_chatterbox if parent_job.original_req else False,
+        use_edge_tts=parent_job.original_req.use_edge_tts if parent_job.original_req else True,
         mix_original=parent_job.original_req.mix_original if parent_job.original_req else False,
         original_volume=parent_job.original_req.original_volume if parent_job.original_req else 0.10,
         audio_priority=parent_job.original_req.audio_priority if parent_job.original_req else True,
@@ -886,7 +888,8 @@ async def create_job_upload(
     tts_rate: str = Form("+0%"),
     mix_original: str = Form("false"),
     original_volume: float = Form(0.10),
-    use_chatterbox: str = Form("true"),
+    use_cosyvoice: str = Form("true"),
+    use_chatterbox: str = Form("false"),
     use_elevenlabs: str = Form("false"),
     use_google_tts: str = Form("false"),
     use_coqui_xtts: str = Form("false"),
@@ -934,7 +937,7 @@ async def create_job_upload(
             tts_rate=tts_rate,
             mix_original=_bool(mix_original),
             original_volume=original_volume,
-            use_chatterbox=_bool(use_chatterbox),
+            use_cosyvoice=_bool(use_cosyvoice), use_chatterbox=_bool(use_chatterbox),
             use_elevenlabs=_bool(use_elevenlabs),
             use_google_tts=_bool(use_google_tts),
             use_coqui_xtts=_bool(use_coqui_xtts),
@@ -988,7 +991,7 @@ def _run_job_with_srt(job: Job, req: JobCreateRequest, srt_path: Path):
             tts_rate=req.tts_rate,
             mix_original=req.mix_original,
             original_volume=req.original_volume,
-            use_chatterbox=req.use_chatterbox,
+            use_cosyvoice=req.use_cosyvoice, use_chatterbox=req.use_chatterbox,
             use_elevenlabs=req.use_elevenlabs,
             use_google_tts=req.use_google_tts,
             use_coqui_xtts=req.use_coqui_xtts,
@@ -1083,7 +1086,8 @@ async def create_job_with_srt(
     tts_rate: str = Form("+0%"),
     mix_original: str = Form("false"),
     original_volume: float = Form(0.10),
-    use_chatterbox: str = Form("true"),
+    use_cosyvoice: str = Form("true"),
+    use_chatterbox: str = Form("false"),
     use_elevenlabs: str = Form("false"),
     use_google_tts: str = Form("false"),
     use_coqui_xtts: str = Form("false"),
@@ -1145,7 +1149,7 @@ async def create_job_with_srt(
             tts_rate=tts_rate,
             mix_original=_bool(mix_original),
             original_volume=original_volume,
-            use_chatterbox=_bool(use_chatterbox),
+            use_cosyvoice=_bool(use_cosyvoice), use_chatterbox=_bool(use_chatterbox),
             use_elevenlabs=_bool(use_elevenlabs),
             use_google_tts=_bool(use_google_tts),
             use_coqui_xtts=_bool(use_coqui_xtts),

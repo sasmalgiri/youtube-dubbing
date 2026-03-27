@@ -15,11 +15,12 @@ export default function HomePage() {
     const [sourceLanguage, setSourceLanguage] = useState('auto');
     const [targetLanguage, setTargetLanguage] = useState('hi');
     const [settings, setSettings] = useState<DubbingSettings>({
-        asr_model: 'medium',
+        asr_model: 'large-v3-turbo',
         translation_engine: 'auto',
         tts_rate: '+0%',
         mix_original: false,
         original_volume: 0.10,
+        use_cosyvoice: true,
         use_chatterbox: false,
         use_elevenlabs: false,
         use_google_tts: false,
