@@ -807,19 +807,32 @@ def list_jobs():
 
 
 def _cleanup_old_jobs():
-    """Remove oldest completed/errored jobs when limit is exceeded."""
-    if len(JOBS) <= MAX_JOBS:
-        return
-    completed = sorted(
-        [(jid, j) for jid, j in list(JOBS.items()) if j.state in ("done", "error")],
-        key=lambda x: x[1].created_at,
-    )
-    while len(JOBS) > MAX_JOBS and completed:
-        jid, _ = completed.pop(0)
-        JOBS.pop(jid, None)
-        job_dir = OUTPUTS / jid
-        if job_dir.exists():
-            shutil.rmtree(job_dir, ignore_errors=True)
+    """Remove oldest completed/errored jobs and orphaned work directories."""
+    # Clean in-memory jobs exceeding limit
+    if len(JOBS) > MAX_JOBS:
+        completed = sorted(
+            [(jid, j) for jid, j in list(JOBS.items()) if j.state in ("done", "error")],
+            key=lambda x: x[1].created_at,
+        )
+        while len(JOBS) > MAX_JOBS and completed:
+            jid, _ = completed.pop(0)
+            JOBS.pop(jid, None)
+            job_dir = OUTPUTS / jid
+            if job_dir.exists():
+                shutil.rmtree(job_dir, ignore_errors=True)
+
+    # Clean orphaned work dirs on disk (not tracked in JOBS, older than 2 hours)
+    if OUTPUTS.exists():
+        now = time.time()
+        for d in OUTPUTS.iterdir():
+            if d.is_dir() and d.name not in JOBS:
+                try:
+                    age = now - d.stat().st_mtime
+                    if age > 7200:  # 2 hours old
+                        shutil.rmtree(d, ignore_errors=True)
+                        print(f"[CLEANUP] Removed orphaned work dir: {d.name}", flush=True)
+                except Exception:
+                    pass
 
 
 @app.post("/api/jobs")
