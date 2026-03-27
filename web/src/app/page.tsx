@@ -15,25 +15,25 @@ export default function HomePage() {
     const [sourceLanguage, setSourceLanguage] = useState('auto');
     const [targetLanguage, setTargetLanguage] = useState('hi');
     const [settings, setSettings] = useState<DubbingSettings>({
-        asr_model: 'large-v3',
+        asr_model: 'medium',
         translation_engine: 'auto',
         tts_rate: '+0%',
         mix_original: false,
         original_volume: 0.10,
-        use_chatterbox: true,
+        use_chatterbox: false,
         use_elevenlabs: false,
         use_google_tts: false,
         use_coqui_xtts: false,
-        use_edge_tts: false,
+        use_edge_tts: true,
         prefer_youtube_subs: false,
         use_yt_translate: false,
         multi_speaker: false,
         transcribe_only: false,
         audio_priority: true,
-        audio_bitrate: '192k',
-        encode_preset: 'veryfast',
+        audio_bitrate: '320k',
+        encode_preset: 'medium',
         split_duration: 0,
-        fast_assemble: true,
+        fast_assemble: false,
         dub_chain: [],
     });
     const [currentUrl, setCurrentUrl] = useState('');

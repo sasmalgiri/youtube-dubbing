@@ -376,17 +376,17 @@ class PipelineConfig:
     output_path: Path
     source_language: str = "auto"
     target_language: str = "hi"
-    asr_model: str = "large-v3"
+    asr_model: str = "medium"
     translation_engine: str = "auto"   # auto, gemini, groq, ollama, google, hinglish, nllb, nllb_polish, google_polish
     tts_voice: str = "hi-IN-SwaraNeural"
     tts_rate: str = "+0%"
     mix_original: bool = False
     original_volume: float = 0.10
-    use_chatterbox: bool = True
+    use_chatterbox: bool = False
     use_elevenlabs: bool = False
     use_google_tts: bool = False
     use_coqui_xtts: bool = False
-    use_edge_tts: bool = False
+    use_edge_tts: bool = True
     prefer_youtube_subs: bool = False
     use_yt_translate: bool = False   # Download YouTube's auto-translated subs in target lang
     multi_speaker: bool = False
@@ -400,7 +400,7 @@ class PipelineConfig:
     # Split long videos into parts (0 = no split, 30/40 = split every N minutes)
     split_duration: int = 0
     # Fast assemble: use in-memory bytearray (instant) vs ffmpeg adelay+amix (slower, preserves overlaps)
-    fast_assemble: bool = True
+    fast_assemble: bool = False
 
 
 class Pipeline:
