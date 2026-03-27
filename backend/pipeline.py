@@ -5326,6 +5326,8 @@ class Pipeline:
 
                 if qc["ok"]:
                     # This attempt passed — use it
+                    # unlink destination first: Windows raises WinError 183 if target exists
+                    wav_out.unlink(missing_ok=True)
                     wav_tmp.rename(wav_out)
                     return qc
 
@@ -5338,6 +5340,7 @@ class Pipeline:
 
         # No attempt passed — keep last wav if it exists, else original stays
         if wav_tmp.exists():
+            wav_out.unlink(missing_ok=True)
             wav_tmp.rename(wav_out)
         mp3_tmp.unlink(missing_ok=True)
         if best_qc:
