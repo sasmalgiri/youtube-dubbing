@@ -5078,8 +5078,14 @@ class Pipeline:
         fitted = self._speed_fit_segments(tts_data)
 
         # Build the dubbed audio timeline
+        # For large segment counts, use fast in-memory bytearray method
+        # For smaller counts, use ffmpeg adelay+amix (preserves overlapping audio better)
         self._report("assemble", 0.2, "Placing audio segments on timeline...")
-        dubbed_audio = self._build_timeline_no_cut(fitted, total_video_duration, prefix="fast_")
+        if len(fitted) > 500:
+            self._report("assemble", 0.2, f"Fast in-memory timeline ({len(fitted)} segments)...")
+            dubbed_audio = self._build_timeline(fitted, total_video_duration, prefix="fast_")
+        else:
+            dubbed_audio = self._build_timeline_no_cut(fitted, total_video_duration, prefix="fast_")
 
         # Mix with original background music (vocals removed) if requested
         if self.cfg.mix_original and audio_raw and audio_raw.exists():
