@@ -1,6 +1,6 @@
 """
-VoiceDub Backend API
-====================
+YouTube Hindi Dubbing API
+=========================
 FastAPI server with SSE progress, YouTube URL input, and translation support.
 """
 from __future__ import annotations
@@ -38,6 +38,8 @@ from pydantic import BaseModel, validator
 from sse_starlette.sse import EventSourceResponse
 
 from pipeline import Pipeline, PipelineConfig, list_voices, DEFAULT_VOICES
+from metrics import get_metrics
+from jobstore import JobStore
 
 # ── Hinglish AI Training Hook ────────────────────────────────────────────────
 HINGLISH_TRAINER_URL = os.environ.get("HINGLISH_TRAINER_URL", "http://localhost:8100")
@@ -145,6 +147,7 @@ class JobCreateRequest(BaseModel):
     split_duration: int = 0     # 0 = no split, 30/40 = split every N minutes
     fast_assemble: bool = True  # True = instant in-memory, False = ffmpeg (preserves overlaps)
     dub_chain: List[str] = []  # e.g. ["en", "hi"] — dub through languages sequentially
+    enable_manual_review: bool = True  # Save manual_review_queue.json for failed segments
 
     @validator("target_language", "source_language")
     def validate_language(cls, v):
@@ -173,7 +176,17 @@ MAX_JOBS = 200
 # Only run one pipeline at a time to avoid resource contention
 _pipeline_semaphore = threading.Semaphore(1)
 BASE_DIR = Path(__file__).resolve().parent
-WORK_ROOT = BASE_DIR / "work"
+# Use a short temp path on Windows to avoid 260-char path limit (WinError 206)
+if os.name == "nt":
+    _short_root = Path(os.environ.get("VOICEDUB_WORK", "C:/tmp/vd"))
+    try:
+        _short_root.mkdir(parents=True, exist_ok=True)
+        WORK_ROOT = _short_root
+    except (PermissionError, OSError):
+        print(f"[WARN] Cannot create {_short_root}, falling back to local work dir", flush=True)
+        WORK_ROOT = BASE_DIR / "work"
+else:
+    WORK_ROOT = BASE_DIR / "work"
 OUTPUTS = WORK_ROOT / "outputs"
 OUTPUTS.mkdir(parents=True, exist_ok=True)
 
@@ -183,9 +196,14 @@ _preferred_save = Path("D:/Shirshendu sasmal/youtube dubbed")
 SAVED_DIR = _preferred_save if _preferred_save.exists() else BASE_DIR / "dubbed_outputs"
 SAVED_DIR.mkdir(parents=True, exist_ok=True)
 
+# ── SQLite job persistence ────────────────────────────────────────────────────
+# Survives server restarts: jobs reload from DB on startup.
+_store = JobStore(BASE_DIR / "jobs.db")
+_store.load_all(JOBS)
+
 # ── App ──────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="VoiceDub API")
+app = FastAPI(title="YouTube Hindi Dubbing API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -260,6 +278,11 @@ def _save_to_titled_folder(job: Job):
     if srt_src.exists():
         srt_name = f"{title} - {lang.upper()} Dubbed.srt"
         shutil.move(str(srt_src), str(folder / srt_name))
+
+    # Move manual review queue if present (must happen before job_dir cleanup)
+    mrq_src = OUTPUTS / job.id / "manual_review_queue.json"
+    if mrq_src.exists():
+        shutil.move(str(mrq_src), str(folder / "manual_review_queue.json"))
 
     # Update job to point to new location
     job.result_path = saved_video
@@ -340,7 +363,7 @@ def _generate_youtube_description(job: Job) -> str:
         f"This video has been professionally dubbed using AI voice technology "
         f"to bring you the best viewing experience in {lang_name}.\n\n"
         f"Original content translated and voiced with natural-sounding {lang_name} narration.\n\n"
-        f"#{lang_name}Dubbed #{lang_name} #AIDubbing #VoiceDub #YouTubeDubbing\n\n"
+        f"#{lang_name}Dubbed #{lang_name} #AIDubbing #HindiDubbing #YouTubeDubbing\n\n"
         f"If you enjoyed this dubbed version, please Like, Subscribe, and Share!\n\n"
         f"Turn on notifications to never miss a new dubbed video.\n\n"
         f"This video was dubbed using AI voice technology. "
@@ -415,10 +438,13 @@ def _make_progress_callback(job: Job):
 def _run_job(job: Job, req: JobCreateRequest):
     """Run the dubbing pipeline in a background thread."""
     job.message = "Waiting in queue..."
+    _t_start = time.time()   # defined before try so error handler can always use it
+    pipeline = None           # defined before try so completion handler can always access it
     _pipeline_semaphore.acquire()
     try:
         job.state = "running"
         job.message = "Starting..."
+        _store.save(job)
 
         job_dir = OUTPUTS / job.id
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -463,10 +489,24 @@ def _run_job(job: Job, req: JobCreateRequest):
             encode_preset=req.encode_preset,
             split_duration=req.split_duration,
             fast_assemble=req.fast_assemble,
+            enable_manual_review=req.enable_manual_review,
         )
 
+        get_metrics().record_job_start(job.id, req.url, {
+            "source_language": req.source_language,
+            "target_language": req.target_language,
+            "tts_engine": (
+                "cosyvoice" if req.use_cosyvoice else
+                "chatterbox" if req.use_chatterbox else
+                "elevenlabs" if req.use_elevenlabs else
+                "edge_tts"
+            ),
+            "asr_model": req.asr_model,
+            "translation_engine": req.translation_engine,
+        })
+
         pipeline = Pipeline(cfg, on_progress=_make_progress_callback(job),
-                           cancel_check=job.cancel_event.is_set)
+                            cancel_check=job.cancel_event.is_set)
         pipeline.run()
 
         job.video_title = pipeline.video_title or "Untitled"
@@ -478,6 +518,7 @@ def _run_job(job: Job, req: JobCreateRequest):
             job.state = "waiting_for_srt"
             job.message = "Transcription complete. Download SRT and upload translation."
             job.events.append({"type": "complete", "state": "waiting_for_srt"})
+            _store.save(job)
             return
 
         if not out_path.exists():
@@ -537,6 +578,43 @@ def _run_job(job: Job, req: JobCreateRequest):
         qa_msg = f" (QA: {job.qa_score:.0%})" if job.qa_score is not None else ""
         job.message = f"Complete{qa_msg}"
         job.events.append({"type": "complete", "state": "done"})
+        _store.save(job)
+
+        # Record job metrics to Supabase (fire-and-forget)
+        _render_time = time.time() - _t_start
+        _segs = (pipeline.segments if pipeline else None) or []
+        # Read manual review queue to count segments that needed review
+        _mrq_path = OUTPUTS / job.id / "manual_review_queue.json"
+        _mrq_path_saved = Path(job.saved_folder) / "manual_review_queue.json" if job.saved_folder else None
+        _manual_review_count = 0
+        for _mp in [_mrq_path_saved, _mrq_path]:
+            if _mp and _mp.exists():
+                try:
+                    import json as _json
+                    _manual_review_count = len(_json.loads(_mp.read_text(encoding="utf-8")))
+                    break
+                except Exception:
+                    pass
+        get_metrics().record_job_complete(job.id, "done", {
+            "total_segments": len(_segs),
+            "pass_rate_first_try": 1.0 if not _segs else
+                max(0.0, (len(_segs) - _manual_review_count) / len(_segs)),
+            "manual_review_count": _manual_review_count,
+            "total_render_time_s": _render_time,
+            "video_title": job.video_title,
+        })
+        if _segs:
+            get_metrics().record_segments(job.id, [
+                {
+                    "segment_idx": i,
+                    "start_time": s.get("start", 0),
+                    "end_time": s.get("end", 0),
+                    "source_text": s.get("text", ""),
+                    "translated_text": s.get("text_translated", ""),
+                    "emotion": s.get("emotion", "neutral"),
+                }
+                for i, s in enumerate(_segs)
+            ])
 
         # Mark this URL as completed so it won't be re-queued on restart
         if job.source_url:
@@ -563,6 +641,11 @@ def _run_job(job: Job, req: JobCreateRequest):
         job.error = str(e)
         job.message = f"Error: {e}"
         job.events.append({"type": "complete", "state": "error", "error": str(e)})
+        _store.save(job)
+        try:
+            get_metrics().record_job_complete(job.id, "error", {"error": str(e)})
+        except Exception:
+            pass
     finally:
         _pipeline_semaphore.release()
 
@@ -621,6 +704,7 @@ def _run_job_split(job: Job, req: JobCreateRequest, voice: str):
             multi_speaker=req.multi_speaker, audio_priority=req.audio_priority,
             audio_bitrate=req.audio_bitrate, encode_preset=req.encode_preset,
             fast_assemble=req.fast_assemble,
+            enable_manual_review=req.enable_manual_review,
         )
         p = Pipeline(cfg, on_progress=callback, cancel_check=job.cancel_event.is_set)
         p.video_title = job.video_title
@@ -690,6 +774,7 @@ def _run_job_split(job: Job, req: JobCreateRequest, voice: str):
             audio_bitrate=req.audio_bitrate,
             encode_preset=req.encode_preset,
             fast_assemble=req.fast_assemble,
+            enable_manual_review=req.enable_manual_review,
         )
 
         pipeline = Pipeline(cfg, on_progress=_part_callback,
@@ -724,6 +809,7 @@ def _run_job_split(job: Job, req: JobCreateRequest, voice: str):
     job.message = f"Complete — {len(output_parts)} parts dubbed!"
     job.events.append({"type": "complete", "state": "done",
                        "parts": len(output_parts)})
+    _store.save(job)
 
     # Cleanup work directory
     try:
@@ -744,20 +830,30 @@ def _queue_chain_next(parent_job: Job):
     # Use the saved video from previous step as input
     input_path = parent_job.saved_video
 
-    # Create request using the output video as source
+    # Create request using the output video as source — carry all settings from original
+    _orig = parent_job.original_req
     req = JobCreateRequest(
         url=input_path,
         source_language=parent_job.target_language,  # Previous output language
         target_language=next_lang,
         prefer_youtube_subs=False,  # No YouTube subs for local file
-        use_cosyvoice=parent_job.original_req.use_cosyvoice if parent_job.original_req else True,
-        use_chatterbox=parent_job.original_req.use_chatterbox if parent_job.original_req else False,
-        use_edge_tts=parent_job.original_req.use_edge_tts if parent_job.original_req else True,
-        mix_original=parent_job.original_req.mix_original if parent_job.original_req else False,
-        original_volume=parent_job.original_req.original_volume if parent_job.original_req else 0.10,
-        audio_priority=parent_job.original_req.audio_priority if parent_job.original_req else True,
-        audio_bitrate=parent_job.original_req.audio_bitrate if parent_job.original_req else "192k",
-        encode_preset=parent_job.original_req.encode_preset if parent_job.original_req else "veryfast",
+        asr_model=_orig.asr_model if _orig else "large-v3",
+        translation_engine=_orig.translation_engine if _orig else "auto",
+        tts_rate=_orig.tts_rate if _orig else "+0%",
+        use_cosyvoice=_orig.use_cosyvoice if _orig else True,
+        use_chatterbox=_orig.use_chatterbox if _orig else False,
+        use_elevenlabs=_orig.use_elevenlabs if _orig else False,
+        use_google_tts=_orig.use_google_tts if _orig else False,
+        use_coqui_xtts=_orig.use_coqui_xtts if _orig else False,
+        use_edge_tts=_orig.use_edge_tts if _orig else True,
+        mix_original=_orig.mix_original if _orig else False,
+        original_volume=_orig.original_volume if _orig else 0.10,
+        multi_speaker=_orig.multi_speaker if _orig else False,
+        audio_priority=_orig.audio_priority if _orig else True,
+        audio_bitrate=_orig.audio_bitrate if _orig else "192k",
+        encode_preset=_orig.encode_preset if _orig else "veryfast",
+        fast_assemble=_orig.fast_assemble if _orig else True,
+        enable_manual_review=_orig.enable_manual_review if _orig else True,
     )
 
     job = Job(
@@ -770,6 +866,7 @@ def _queue_chain_next(parent_job: Job):
     job.original_req = req
     job.video_title = parent_job.video_title  # Carry title forward
     JOBS[job_id] = job
+    _store.save(job)
 
     parent_job.message = f"Complete — next: dubbing to {next_lang.upper()}"
 
@@ -782,6 +879,21 @@ def _queue_chain_next(parent_job: Job):
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/cache")
+def cache_stats():
+    """Return content-hash cache statistics (entry counts and disk usage)."""
+    import cache as _cache_mod
+    return _cache_mod.cache_stats()
+
+
+@app.delete("/api/cache")
+def clear_cache(older_than_days: int = 0):
+    """Clear cached ASR/translation/TTS entries.
+    older_than_days=0 clears everything; N clears entries not accessed in N days."""
+    import cache as _cache_mod
+    return _cache_mod.clear_cache(older_than_days)
 
 
 @app.get("/api/voices")
@@ -825,6 +937,7 @@ def _cleanup_old_jobs():
         while len(JOBS) > MAX_JOBS and completed:
             jid, _ = completed.pop(0)
             JOBS.pop(jid, None)
+            _store.delete(jid)
             job_dir = OUTPUTS / jid
             if job_dir.exists():
                 shutil.rmtree(job_dir, ignore_errors=True)
@@ -871,6 +984,7 @@ def create_job(req: JobCreateRequest):
     )
     job.original_req = req
     JOBS[job_id] = job
+    _store.save(job)
 
     t = threading.Thread(target=_run_job, args=(job, req), daemon=True)
     t.start()
@@ -895,6 +1009,7 @@ async def create_job_upload(
     use_coqui_xtts: str = Form("false"),
     use_edge_tts: str = Form("false"),
     prefer_youtube_subs: str = Form("false"),
+    use_yt_translate: str = Form("false"),
     multi_speaker: str = Form("false"),
     transcribe_only: str = Form("false"),
     audio_priority: str = Form("true"),
@@ -902,6 +1017,7 @@ async def create_job_upload(
     encode_preset: str = Form("veryfast"),
     split_duration: int = Form(0),
     fast_assemble: str = Form("true"),
+    enable_manual_review: str = Form("true"),
     voice: str = Form("hi-IN-SwaraNeural"),
 ):
     """Create a dubbing job from an uploaded video file."""
@@ -943,6 +1059,7 @@ async def create_job_upload(
             use_coqui_xtts=_bool(use_coqui_xtts),
             use_edge_tts=_bool(use_edge_tts),
             prefer_youtube_subs=_bool(prefer_youtube_subs),
+            use_yt_translate=_bool(use_yt_translate),
             multi_speaker=_bool(multi_speaker),
             transcribe_only=_bool(transcribe_only),
             audio_priority=_bool(audio_priority),
@@ -950,6 +1067,7 @@ async def create_job_upload(
             encode_preset=encode_preset,
             split_duration=split_duration,
             fast_assemble=_bool(fast_assemble),
+            enable_manual_review=_bool(enable_manual_review),
         )
     except Exception:
         shutil.rmtree(job_dir, ignore_errors=True)
@@ -958,6 +1076,7 @@ async def create_job_upload(
     job = Job(id=job_id, source_url=f"upload:{file.filename}", target_language=target_language)
     job.original_req = req
     JOBS[job_id] = job
+    _store.save(job)
 
     t = threading.Thread(target=_run_job, args=(job, req), daemon=True)
     t.start()
@@ -972,6 +1091,7 @@ def _run_job_with_srt(job: Job, req: JobCreateRequest, srt_path: Path):
     try:
         job.state = "running"
         job.message = "Starting (SRT provided, skipping transcription)..."
+        _store.save(job)
 
         job_dir = OUTPUTS / job.id
         work_dir = job_dir / "work"
@@ -1001,6 +1121,7 @@ def _run_job_with_srt(job: Job, req: JobCreateRequest, srt_path: Path):
             audio_bitrate=req.audio_bitrate,
             encode_preset=req.encode_preset,
             fast_assemble=req.fast_assemble,
+            enable_manual_review=req.enable_manual_review,
         )
 
         pipeline = Pipeline(cfg, on_progress=_make_progress_callback(job),
@@ -1048,6 +1169,7 @@ def _run_job_with_srt(job: Job, req: JobCreateRequest, srt_path: Path):
         job.state = "done"
         job.message = "Complete"
         job.events.append({"type": "complete", "state": "done"})
+        _store.save(job)
 
         if job.source_url:
             _mark_url_completed(job.source_url)
@@ -1070,6 +1192,7 @@ def _run_job_with_srt(job: Job, req: JobCreateRequest, srt_path: Path):
         job.error = str(e)
         job.message = f"Error: {e}"
         job.events.append({"type": "complete", "state": "error", "error": str(e)})
+        _store.save(job)
     finally:
         _pipeline_semaphore.release()
 
@@ -1092,12 +1215,15 @@ async def create_job_with_srt(
     use_google_tts: str = Form("false"),
     use_coqui_xtts: str = Form("false"),
     use_edge_tts: str = Form("false"),
+    prefer_youtube_subs: str = Form("false"),
+    use_yt_translate: str = Form("false"),
     multi_speaker: str = Form("false"),
     audio_priority: str = Form("true"),
     audio_bitrate: str = Form("192k"),
     encode_preset: str = Form("veryfast"),
     split_duration: int = Form(0),
     fast_assemble: str = Form("true"),
+    enable_manual_review: str = Form("true"),
     voice: str = Form("hi-IN-SwaraNeural"),
 ):
     """Create a dubbing job from a video (URL or file) + pre-translated SRT file.
@@ -1154,12 +1280,15 @@ async def create_job_with_srt(
             use_google_tts=_bool(use_google_tts),
             use_coqui_xtts=_bool(use_coqui_xtts),
             use_edge_tts=_bool(use_edge_tts),
+            prefer_youtube_subs=_bool(prefer_youtube_subs),
+            use_yt_translate=_bool(use_yt_translate),
             multi_speaker=_bool(multi_speaker),
             audio_priority=_bool(audio_priority),
             audio_bitrate=audio_bitrate,
             encode_preset=encode_preset,
             split_duration=split_duration,
             fast_assemble=_bool(fast_assemble),
+            enable_manual_review=_bool(enable_manual_review),
         )
     except Exception:
         shutil.rmtree(job_dir, ignore_errors=True)
@@ -1168,6 +1297,7 @@ async def create_job_with_srt(
     job = Job(id=job_id, source_url=display_source, target_language=target_language)
     job.original_req = req
     JOBS[job_id] = job
+    _store.save(job)
 
     t = threading.Thread(target=_run_job_with_srt, args=(job, req, srt_path), daemon=True)
     t.start()
@@ -1349,6 +1479,7 @@ def _run_resume(job: Job):
     try:
         job.state = "running"
         job.message = "Resuming from uploaded SRT..."
+        _store.save(job)
         job.events.clear()  # Clear in-place so SSE generators tracking last_index stay consistent
 
         job_dir = OUTPUTS / job.id
@@ -1369,6 +1500,7 @@ def _run_resume(job: Job):
             target_language=job.target_language,
             tts_voice=voice,
             tts_rate=req.tts_rate if req else "+0%",
+            use_cosyvoice=req.use_cosyvoice if req else True,
             use_chatterbox=req.use_chatterbox if req else False,
             use_elevenlabs=req.use_elevenlabs if req else False,
             use_google_tts=req.use_google_tts if req else False,
@@ -1379,7 +1511,9 @@ def _run_resume(job: Job):
             audio_priority=req.audio_priority if req else True,
             audio_bitrate=req.audio_bitrate if req else "192k",
             encode_preset=req.encode_preset if req else "veryfast",
+            fast_assemble=req.fast_assemble if req else True,
             multi_speaker=req.multi_speaker if req else False,
+            enable_manual_review=req.enable_manual_review if req else True,
         )
 
         pipeline = Pipeline(cfg, on_progress=_make_progress_callback(job),
@@ -1412,6 +1546,7 @@ def _run_resume(job: Job):
         job.state = "done"
         job.message = "Complete"
         job.events.append({"type": "complete", "state": "done"})
+        _store.save(job)
 
         # Mark this URL as completed so it won't be re-queued on restart
         if job.source_url:
@@ -1436,6 +1571,7 @@ def _run_resume(job: Job):
         job.error = str(e)
         job.message = f"Error: {e}"
         job.events.append({"type": "complete", "state": "error", "error": str(e)})
+        _store.save(job)
     finally:
         _pipeline_semaphore.release()
 
@@ -1528,6 +1664,30 @@ def list_outputs():
     return outputs
 
 
+@app.get("/api/jobs/{job_id}/manual-review")
+def get_manual_review_queue(job_id: str):
+    """Return segments flagged for manual review for a given job.
+
+    Returns the contents of manual_review_queue.json if it exists.
+    Empty list if the job passed QC or manual review is disabled.
+    """
+    # Look in saved titled folder first, then in work dir
+    import json as _json
+    locations = []
+    if job_id in JOBS and JOBS[job_id].saved_folder:
+        locations.append(Path(JOBS[job_id].saved_folder) / "manual_review_queue.json")
+    locations.append(OUTPUTS / job_id / "manual_review_queue.json")
+
+    for loc in locations:
+        try:
+            if loc.exists():
+                items = _json.loads(loc.read_text(encoding="utf-8"))
+                return {"job_id": job_id, "count": len(items), "items": items}
+        except Exception:
+            continue
+    return {"job_id": job_id, "count": 0, "items": []}
+
+
 @app.delete("/api/jobs/{job_id}")
 def delete_job(job_id: str):
     job = JOBS.get(job_id)
@@ -1548,6 +1708,7 @@ def delete_job(job_id: str):
         return {"status": "cancelled"}
 
     JOBS.pop(job_id, None)
+    _store.delete(job_id)
 
     job_dir = OUTPUTS / job_id
     if job_dir.exists():

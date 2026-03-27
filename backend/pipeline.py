@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from srt_utils import write_srt
+import cache as _cache
 
 
 # ── IndicTrans2 / NLLB Singleton (Stage A: Meaning Model) ────────────────────
@@ -402,6 +403,13 @@ class PipelineConfig:
     split_duration: int = 0
     # Fast assemble: use in-memory bytearray (instant) vs ffmpeg adelay+amix (slower, preserves overlaps)
     fast_assemble: bool = False
+    # Pronunciation dictionary: JSON file mapping source terms → target phonetic spellings
+    # Example: {"Pikachu": "Pikachu", "GPT": "जी-पी-टी"}
+    pronunciation_path: str = ""
+    # Manual review queue: save JSON of segments that failed QC after all retries
+    enable_manual_review: bool = True
+    # WhisperX forced alignment: refine word-level timestamps after transcription
+    use_whisperx: bool = False
 
 
 class Pipeline:
@@ -423,6 +431,18 @@ class Pipeline:
         self._has_nvenc: Optional[bool] = None  # Cached NVENC availability
         self.cfg.work_dir.mkdir(parents=True, exist_ok=True)
 
+        # Load pronunciation dictionary (maps source terms → target phonetic spellings)
+        self._pronunciation: Dict[str, str] = {}
+        pron_path = cfg.pronunciation_path or str(Path(__file__).resolve().parent / "pronunciation.json")
+        try:
+            import json as _json
+            p = Path(pron_path)
+            if p.exists():
+                self._pronunciation = _json.loads(p.read_text(encoding="utf-8"))
+                print(f"[Pipeline] Loaded {len(self._pronunciation)} pronunciation entries from {p}", flush=True)
+        except Exception as e:
+            print(f"[Pipeline] pronunciation.json load error: {e}", flush=True)
+
         # Resolve executable paths
         self._ytdlp = self._find_executable("yt-dlp")
         self._ffmpeg = "ffmpeg"  # resolved in _ensure_ffmpeg
@@ -431,6 +451,23 @@ class Pipeline:
         """Raise if the job has been cancelled."""
         if self._cancel_check():
             raise RuntimeError("Job cancelled by user")
+
+    def _apply_pronunciation(self, text: str) -> str:
+        """Apply pronunciation dictionary to translated text before TTS.
+
+        Replaces proper nouns, abbreviations, and brand names with
+        phonetically correct spellings for the target language.
+        Longest match wins (sorted by length descending to avoid partial replacements).
+        Keys starting with '_' are treated as comments and skipped.
+        """
+        if not self._pronunciation:
+            return text
+        entries = {k: v for k, v in self._pronunciation.items()
+                   if not k.startswith("_") and isinstance(v, str)}
+        for src in sorted(entries, key=len, reverse=True):
+            if src in text:
+                text = text.replace(src, entries[src])
+        return text
 
     @staticmethod
     def _find_executable(name: str) -> str:
@@ -515,6 +552,58 @@ class Pipeline:
     def _report(self, step: str, progress: float, message: str):
         """Report progress to callback."""
         self._on_progress(step, min(progress, 1.0), message)
+
+    # ── Emotion detection ────────────────────────────────────────────────
+    # Keyword lists for heuristic emotion tagging
+    _EMOTION_PUNCHY_WORDS = frozenset([
+        "fight", "attack", "kill", "war", "battle", "danger", "power", "win", "lose",
+        "destroy", "epic", "finally", "reveal", "shock", "now", "stop", "never",
+        "defeat", "enemy", "blood", "scream", "boss", "rank", "unlock", "level",
+        # Hindi equivalents
+        "लड़ाई", "हमला", "शक्ति", "जीत", "हार", "ताकत", "खतरा", "रहस्य", "अब",
+    ])
+    _EMOTION_EMOTIONAL_WORDS = frozenset([
+        "love", "miss", "cry", "sad", "heart", "please", "sorry", "alone", "die",
+        "remember", "dream", "hope", "fear", "truth", "promise", "mother", "father",
+        "friend", "lost", "pain", "hurt", "tears", "farewell", "goodbye",
+        # Hindi equivalents
+        "प्यार", "याद", "रोना", "दुख", "दिल", "माफ", "सच", "वादा", "अकेला", "दर्द",
+    ])
+    _EMOTION_COMEDIC_WORDS = frozenset([
+        "funny", "joke", "laugh", "silly", "ridiculous", "seriously", "really",
+        "unbelievable", "wait", "what", "huh", "dude", "bro", "man",
+        # Hindi equivalents
+        "मज़ाक", "हँसी", "यार", "भाई", "सच में", "अरे",
+    ])
+
+    def _detect_segment_emotion(self, seg: Dict) -> str:
+        """Heuristic emotion tagger. Returns 'neutral' | 'punchy' | 'emotional' | 'comedic'.
+
+        Uses punctuation, duration, and keyword signals. No extra API call.
+        Order of precedence: comedic > emotional > punchy > neutral.
+        """
+        text = (seg.get("text", "") + " " + seg.get("text_translated", "")).lower()
+        dur = seg.get("end", 0) - seg.get("start", 0)
+
+        # Comedic: questions + common comedy markers
+        q_count = text.count("?")
+        has_comedic_kw = any(w in text for w in self._EMOTION_COMEDIC_WORDS)
+        if q_count >= 2 or (q_count >= 1 and has_comedic_kw):
+            return "comedic"
+
+        # Emotional: ellipses / slow pace / emotional keywords
+        has_ellipsis = "..." in text or "…" in text
+        has_emotional_kw = any(w in text for w in self._EMOTION_EMOTIONAL_WORDS)
+        if has_emotional_kw or (has_ellipsis and dur > 3.0):
+            return "emotional"
+
+        # Punchy: exclamations / short duration / action keywords
+        excl = text.count("!")
+        has_punchy_kw = any(w in text for w in self._EMOTION_PUNCHY_WORDS)
+        if excl >= 1 or has_punchy_kw or dur < 2.0:
+            return "punchy"
+
+        return "neutral"
 
     # ── Speaker Diarization ───────────────────────────────────────────────
 
@@ -976,6 +1065,9 @@ class Pipeline:
                 self._report("translate", 0.0, f"Translating segments to {target_name}...")
                 self._translate_segments(text_segments)
                 self.segments = text_segments
+                # Tag emotion on each segment after translation
+                for _seg in text_segments:
+                    _seg["emotion"] = self._detect_segment_emotion(_seg)
                 self._report("translate", 1.0, "Translation complete")
                 # Cache translation for crash recovery
                 self._save_segments_cache(text_segments, "translate")
@@ -1861,15 +1953,83 @@ class Pipeline:
     # ── Step 3b: Transcribe speech from audio ─────────────────────────────
     def _transcribe(self, wav_path: Path) -> List[Dict]:
         """Transcribe speech from audio — tries Groq Whisper API first (30x faster),
-        falls back to local faster-whisper if no API key or API fails."""
+        falls back to local faster-whisper if no API key or API fails.
+        Results are cached by audio SHA-256 + model + language."""
+        lang = self.cfg.source_language or "auto"
+        model = self.cfg.asr_model
+
+        # Check ASR cache first
+        cached = _cache.get_asr(wav_path, model, lang)
+        if cached is not None:
+            self._report("transcribe", 0.95, f"ASR cache hit — {len(cached)} segments (skipping transcription)")
+            return cached
+
         groq_key = os.environ.get("GROQ_API_KEY", "").strip()
         if groq_key:
             try:
-                return self._transcribe_groq(wav_path, groq_key)
+                segments = self._transcribe_groq(wav_path, groq_key)
+                if self.cfg.use_whisperx and segments:
+                    segments = self._whisperx_align(wav_path, segments)
+                _cache.put_asr(wav_path, model, lang, segments)
+                return segments
             except Exception as e:
                 self._report("transcribe", 0.1, f"Groq Whisper failed ({e}), using local model...")
 
-        return self._transcribe_local(wav_path)
+        segments = self._transcribe_local(wav_path)
+
+        # Optional: refine word-level timestamps with WhisperX forced alignment
+        if self.cfg.use_whisperx and segments:
+            segments = self._whisperx_align(wav_path, segments)
+
+        _cache.put_asr(wav_path, model, lang, segments)
+        return segments
+
+    def _whisperx_align(self, wav_path: Path, segments: List[Dict]) -> List[Dict]:
+        """Refine word-level timestamps using WhisperX forced alignment.
+        Falls back to original segments if whisperx is not installed."""
+        try:
+            import whisperx
+            import torch
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            lang = self.cfg.source_language
+            if not lang or lang == "auto":
+                lang = "en"
+
+            self._report("transcribe", 0.97, "Running WhisperX forced alignment...")
+            align_model, metadata = whisperx.load_align_model(
+                language_code=lang, device=device
+            )
+            result = whisperx.align(
+                segments, align_model, metadata, str(wav_path), device,
+                return_char_alignments=False,
+            )
+            refined = result.get("segments", segments)
+            # Normalise to our segment dict format (ensure start/end/text present)
+            out = []
+            for seg in refined:
+                entry = {
+                    "start": float(seg.get("start", 0)),
+                    "end":   float(seg.get("end", 0)),
+                    "text":  seg.get("text", "").strip(),
+                }
+                words = seg.get("words")
+                if words:
+                    entry["words"] = [
+                        {"word": w.get("word", "").strip(),
+                         "start": float(w.get("start", entry["start"])),
+                         "end":   float(w.get("end", entry["end"]))}
+                        for w in words
+                    ]
+                out.append(entry)
+            self._report("transcribe", 0.99, f"WhisperX alignment complete ({len(out)} segments)")
+            return out
+        except ImportError:
+            print("[Pipeline] whisperx not installed — skipping forced alignment", flush=True)
+            return segments
+        except Exception as e:
+            print(f"[Pipeline] WhisperX alignment failed ({e}) — using original timestamps", flush=True)
+            return segments
 
     def _transcribe_groq(self, wav_path: Path, api_key: str) -> List[Dict]:
         """Transcribe using Groq Whisper API — ~25s per hour of audio.
@@ -2051,6 +2211,21 @@ class Pipeline:
         gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
         groq_key = os.environ.get("GROQ_API_KEY", "").strip()
         engine = self.cfg.translation_engine
+        target_lang = self.cfg.target_language
+
+        # Determine effective engine name for cache key (use actual engine chosen in auto mode)
+        _eff_engine = engine
+        if engine == "auto":
+            if gemini_key:   _eff_engine = "gemini"
+            elif groq_key:   _eff_engine = "groq"
+            elif self._ollama_available(): _eff_engine = "ollama"
+            else:            _eff_engine = "google"
+
+        # Check translation cache
+        cached_translation = _cache.get_translation(full_text, _eff_engine, target_lang)
+        if cached_translation is not None:
+            self._report("translate", 0.95, "Translation cache hit — skipping re-translation")
+            return full_text, cached_translation
 
         # If a specific engine is selected, use it directly
         if engine == "hinglish" and self._ollama_available():
@@ -2081,6 +2256,7 @@ class Pipeline:
             self._report("translate", 0.25, "No GEMINI/GROQ/Ollama found, using Google Translate...")
             translated_text = self._translate_with_google(full_text)
 
+        _cache.put_translation(full_text, _eff_engine, target_lang, translated_text)
         return full_text, translated_text
 
     def _translate_with_gemini(self, full_text: str, api_key: str, speech_duration: float = 0) -> str:
@@ -2801,7 +2977,6 @@ class Pipeline:
         spoken dubbing quality. Round-robins batches across Groq + SambaNova.
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        import requests as _requests
 
         target_name = LANGUAGE_NAMES.get(self.cfg.target_language, self.cfg.target_language)
         is_hindi = self.cfg.target_language in ("hi", "hi-IN")
@@ -3134,8 +3309,15 @@ class Pipeline:
             end = min(start + batch_size, total)
             batch = segments[start:end]
 
-            # Build numbered list of Google-translated text
-            lines = [f"{i+1}. {seg['text_translated']}" for i, seg in enumerate(batch)]
+            # Build numbered list with emotion mode hints
+            _MODE_HINTS_GP = {
+                "punchy": "[punchy]", "emotional": "[emotional]",
+                "comedic": "[comedic]", "neutral": "",
+            }
+            lines = [
+                f"{i+1}. {_MODE_HINTS_GP.get(seg.get('emotion', 'neutral'), '')} {seg['text_translated']}".strip()
+                for i, seg in enumerate(batch)
+            ]
             user_msg = polish_prefix + "\n".join(lines)
 
             polished = None
@@ -3315,9 +3497,21 @@ class Pipeline:
             self._report("translate", 0.35,
                          f"Stage 2/3: {engine_label} dubbing rewrite ({total_batches} batches)...")
 
+            # Emotion → rewrite mode instructions (added per-segment in the prompt)
+            _REWRITE_MODE_HINTS = {
+                "punchy":    "[MODE: punchy — short, dramatic, hype energy]",
+                "emotional": "[MODE: emotional — soft, heartfelt, slow rhythm]",
+                "comedic":   "[MODE: comedic — light, playful, natural sarcasm]",
+                "neutral":   "[MODE: neutral — clear, conversational, natural flow]",
+            }
+
             def _polish_one_batch(batch, batch_idx):
                 """Send batch to ALL available engines simultaneously, return first good result."""
-                lines = [f"{i+1}. {seg['text_translated']}" for i, seg in enumerate(batch)]
+                lines = []
+                for i, seg in enumerate(batch):
+                    emotion = seg.get("emotion", "neutral")
+                    mode_hint = _REWRITE_MODE_HINTS.get(emotion, "")
+                    lines.append(f"{i+1}. {mode_hint} {seg['text_translated']}")
                 user_msg = polish_prefix + "\n".join(lines)
 
                 def _call_llm(name, key):
@@ -3514,7 +3708,9 @@ class Pipeline:
         # Generate all TTS at natural rate
         async def tts_generate():
             for i, seg in enumerate(segments):
-                text = seg.get("text_translated", seg.get("text", "")).strip()
+                text = self._prepare_tts_text(
+                    seg.get("text_translated", seg.get("text", "")).strip()
+                )
                 if not text:
                     continue
                 mp3 = self.cfg.work_dir / f"{prefix}seg_{i:04d}.mp3"
@@ -3605,6 +3801,13 @@ class Pipeline:
     # Speed limits: slow TTS → speed up to max 1.1x, long TTS → speed up to max 1.25x
     SPEED_MIN = 1.0 / 1.1    # 0.909 — slowest we allow (1.1x slower than natural)
     SPEED_MAX = 1.25          # fastest we allow (1.25x faster than natural)
+
+    # Spec-aligned duration fitting thresholds (per production-grade dubbing spec)
+    FIT_PASS_MS = 80          # ≤80ms error → accept as-is (no stretch)
+    FIT_STRETCH_MS = 150      # ≤150ms → fine stretch within preferred ratio
+    FIT_REWRITE_MS = 250      # >250ms → flag for rewrite (still stretch if within hard limits)
+    FIT_RATIO_PREF_MIN = 0.94 # preferred soft stretch limit
+    FIT_RATIO_PREF_MAX = 1.06 # preferred soft stretch limit
 
     def _speed_fit_segments(self, tts_data):
         """Speed-adjust each TTS segment to fit its time slot.
@@ -4069,19 +4272,31 @@ class Pipeline:
     # ── Natural TTS + Video sync ────────────────────────────────────────
     # Languages that Chatterbox TTS can pronounce well (English only for now)
     CHATTERBOX_SUPPORTED_LANGS = {"en"}
+    # Languages supported by Chatterbox Multilingual
+    CHATTERBOX_MTL_LANGS = {
+        "ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi",
+        "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv",
+        "sw", "tr", "zh",
+    }
 
     def _generate_tts_natural(self, segments):
         """Generate TTS at natural speed. Uses first enabled engine in priority order.
 
-        Hybrid mode: If both Coqui XTTS + Edge-TTS are enabled, splits segments
-        between GPU (Coqui) and cloud (Edge-TTS) in parallel for ~2x speed.
+        English target priority (zero-spend):
+            Chatterbox-Turbo → Chatterbox Multilingual → XTTS v2 → Edge-TTS
 
-        Chatterbox is English-only — for other languages it auto-falls back to
-        ElevenLabs (multilingual) or Edge-TTS (which has native voices for 70+ languages).
+        Non-English target priority:
+            CosyVoice 2 → Chatterbox Multilingual → ElevenLabs → XTTS v2 → Edge-TTS
         """
         target = self.cfg.target_language
+        is_english = target == "en" or target.startswith("en-")
 
-        # Priority: CosyVoice 2 → Chatterbox (EN) → ElevenLabs → XTTS v2 → Google → Edge TTS
+        # ── English dubbing: zero-spend local stack ──────────────────────
+        if is_english:
+            return self._generate_tts_english(segments)
+
+        # ── Non-English dubbing ──────────────────────────────────────────
+        # Priority: CosyVoice 2 → Chatterbox MTL → ElevenLabs → XTTS v2 → Google → Edge TTS
         if self.cfg.use_cosyvoice:
             try:
                 import torch
@@ -4094,20 +4309,20 @@ class Pipeline:
                              f"CosyVoice 2 failed ({e}) — falling back...")
 
         if self.cfg.use_chatterbox:
-            if target in self.CHATTERBOX_SUPPORTED_LANGS:
+            if target.split("-")[0] in self.CHATTERBOX_MTL_LANGS:
                 try:
                     import torch
                     if not torch.cuda.is_available():
                         raise RuntimeError("No CUDA GPU available")
-                    self._report("synthesize", 0.05, "Using Chatterbox TTS (GPU, human-like voice)...")
-                    return self._tts_chatterbox(segments)
+                    self._report("synthesize", 0.05, "Using Chatterbox Multilingual (GPU, voice cloning)...")
+                    return self._tts_chatterbox_multilingual(segments)
                 except Exception as e:
                     self._report("synthesize", 0.05,
-                                 f"Chatterbox failed ({e}) — falling back to Edge-TTS...")
+                                 f"Chatterbox Multilingual failed ({e}) — falling back...")
             else:
                 target_name = LANGUAGE_NAMES.get(target, target)
                 self._report("synthesize", 0.05,
-                             f"Chatterbox is English-only — trying next engine for {target_name}...")
+                             f"Chatterbox doesn't support {target_name} — trying next engine...")
 
         if self.cfg.use_elevenlabs:
             elevenlabs_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
@@ -4166,6 +4381,53 @@ class Pipeline:
                          f"Using Edge-TTS with {voices_used} distinct voices for {target_name}...")
         else:
             self._report("synthesize", 0.05, f"Using Edge-TTS ({voice}) for {target_name}...")
+        return self._tts_edge(segments, voice_map=self._voice_map)
+
+    def _generate_tts_english(self, segments):
+        """Zero-spend English dubbing TTS stack.
+
+        Priority: Chatterbox-Turbo → Chatterbox Multilingual → XTTS v2 → Edge-TTS
+        All local, all free, no API keys needed.
+        """
+        has_gpu = False
+        try:
+            import torch
+            has_gpu = torch.cuda.is_available()
+        except ImportError:
+            pass
+
+        # 1. Chatterbox-Turbo (350M, English-focused, lowest VRAM)
+        if has_gpu:
+            try:
+                self._report("synthesize", 0.05,
+                             "English dub: Chatterbox-Turbo (GPU, 350M, voice cloning)...")
+                return self._tts_chatterbox_turbo(segments)
+            except Exception as e:
+                self._report("synthesize", 0.05,
+                             f"Chatterbox-Turbo failed ({e}) — trying Multilingual...")
+
+        # 2. Chatterbox Multilingual (broader model, still free)
+        if has_gpu:
+            try:
+                self._report("synthesize", 0.05,
+                             "English dub: Chatterbox Multilingual (GPU, voice cloning)...")
+                return self._tts_chatterbox_multilingual(segments)
+            except Exception as e:
+                self._report("synthesize", 0.05,
+                             f"Chatterbox Multilingual failed ({e}) — trying XTTS v2...")
+
+        # 3. XTTS v2 fallback (voice cloning, 16 langs — always tried for English)
+        if has_gpu:
+            try:
+                self._report("synthesize", 0.05,
+                             "English dub: XTTS v2 (GPU, voice cloning fallback)...")
+                return self._tts_coqui_xtts(segments)
+            except Exception as e:
+                self._report("synthesize", 0.05,
+                             f"XTTS v2 failed ({e}) — falling back to Edge-TTS...")
+
+        # 4. Edge-TTS (cloud, no GPU needed)
+        self._report("synthesize", 0.05, "English dub: Edge-TTS (cloud fallback)...")
         return self._tts_edge(segments, voice_map=self._voice_map)
 
     def _tts_hybrid_coqui_edge(self, segments):
@@ -4258,19 +4520,34 @@ class Pipeline:
                      f"Hybrid TTS complete: {len(tts_data)} segments")
         return tts_data
 
-    def _tts_chatterbox(self, segments):
-        """Generate TTS using Chatterbox — free, local, human-like AI voice."""
+    def _tts_chatterbox_turbo(self, segments):
+        """Generate TTS using Chatterbox-Turbo — 350M English-focused model.
+
+        Lowest VRAM usage, MIT license, voice cloning from original audio.
+        Primary engine for zero-spend English dubbing.
+        """
         import torch
         import torchaudio
-        from chatterbox.tts import ChatterboxTTS
+        from chatterbox.tts_turbo import ChatterboxTurboTTS
 
-        self._report("synthesize", 0.05, "Loading Chatterbox model on GPU...")
-        model = ChatterboxTTS.from_pretrained(device="cuda")
+        self._report("synthesize", 0.05, "Loading Chatterbox-Turbo (350M) on GPU...")
+        model = ChatterboxTurboTTS.from_pretrained(device="cuda")
+
+        # Prepare voice reference from original audio (needs >5s)
+        try:
+            ref_wav = self._get_voice_ref(min_duration=6, sample_rate=24000)
+            if ref_wav:
+                self._report("synthesize", 0.06, "Cloning voice from original audio...")
+                model.prepare_conditionals(str(ref_wav))
+        except Exception as e:
+            print(f"[CB-Turbo] Voice cloning setup failed ({e}), using built-in voice", flush=True)
 
         tts_data = []
         try:
             for i, seg in enumerate(segments):
-                text = seg.get("text_translated", seg.get("text", "")).strip()
+                text = self._prepare_tts_text(
+                    seg.get("text_translated", seg.get("text", "")).strip()
+                )
                 if not text:
                     continue
 
@@ -4278,10 +4555,9 @@ class Pipeline:
 
                 try:
                     wav_tensor = model.generate(text)
-                    # Save as WAV — Chatterbox outputs at 24kHz
                     torchaudio.save(str(wav_path), wav_tensor.cpu(), model.sr)
 
-                    # Resample to our pipeline's sample rate
+                    # Resample to pipeline sample rate
                     if model.sr != self.SAMPLE_RATE:
                         resampled = self.cfg.work_dir / f"tts_{i:04d}_rs.wav"
                         subprocess.run(
@@ -4294,9 +4570,14 @@ class Pipeline:
                         resampled.rename(wav_path)
                     self._enhance_tts_wav(wav_path)
 
+                    expected_dur = seg.get("end", 0) - seg.get("start", 0)
+                    qc = self._qc_check_wav(wav_path, expected_duration=expected_dur)
+                    if not qc["ok"]:
+                        print(f"[QC/CB-Turbo] Seg {i} issues: {'; '.join(qc['issues'])}", flush=True)
+
                 except Exception as e:
                     self._report("synthesize", 0.1 + 0.8 * ((i + 1) / len(segments)),
-                                 f"Chatterbox error on seg {i+1}: {e}, skipping...")
+                                 f"CB-Turbo error on seg {i+1}: {e}, skipping...")
                     continue
 
                 if not wav_path.exists() or wav_path.stat().st_size == 0:
@@ -4312,13 +4593,136 @@ class Pipeline:
                 self._report(
                     "synthesize",
                     0.1 + 0.8 * ((i + 1) / len(segments)),
-                    f"Synthesized {i + 1}/{len(segments)} segments (Chatterbox)...",
+                    f"Synthesized {i + 1}/{len(segments)} segments (CB-Turbo)...",
                 )
         finally:
-            del model
+            if model is not None:
+                del model
             torch.cuda.empty_cache()
 
         return tts_data
+
+    def _tts_chatterbox_multilingual(self, segments):
+        """Generate TTS using Chatterbox Multilingual — 23 languages, voice cloning.
+
+        Fallback for when Turbo fails or for non-English targets.
+        MIT license, supports voice cloning from a reference clip.
+        """
+        import torch
+        import torchaudio
+        from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+
+        target = self.cfg.target_language.split("-")[0].lower()  # "en-US" → "en", "Hi" → "hi"
+
+        self._report("synthesize", 0.05, "Loading Chatterbox Multilingual on GPU...")
+        model = ChatterboxMultilingualTTS.from_pretrained(device="cuda")
+
+        # Prepare voice reference from original audio
+        try:
+            ref_wav = self._get_voice_ref(min_duration=6, sample_rate=24000)
+            if ref_wav:
+                self._report("synthesize", 0.06, "Cloning voice from original audio...")
+                model.prepare_conditionals(str(ref_wav))
+        except Exception as e:
+            print(f"[CB-MTL] Voice cloning setup failed ({e}), using built-in voice", flush=True)
+
+        tts_data = []
+        try:
+            for i, seg in enumerate(segments):
+                text = self._prepare_tts_text(
+                    seg.get("text_translated", seg.get("text", "")).strip()
+                )
+                if not text:
+                    continue
+
+                wav_path = self.cfg.work_dir / f"tts_{i:04d}.wav"
+
+                try:
+                    wav_tensor = model.generate(text, language_id=target)
+                    torchaudio.save(str(wav_path), wav_tensor.cpu(), model.sr)
+
+                    # Resample to pipeline sample rate
+                    if model.sr != self.SAMPLE_RATE:
+                        resampled = self.cfg.work_dir / f"tts_{i:04d}_rs.wav"
+                        subprocess.run(
+                            [self._ffmpeg, "-y", "-i", str(wav_path),
+                             "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
+                             str(resampled)],
+                            check=True, capture_output=True,
+                        )
+                        wav_path.unlink(missing_ok=True)
+                        resampled.rename(wav_path)
+                    self._enhance_tts_wav(wav_path)
+
+                    expected_dur = seg.get("end", 0) - seg.get("start", 0)
+                    qc = self._qc_check_wav(wav_path, expected_duration=expected_dur)
+                    if not qc["ok"]:
+                        print(f"[QC/CB-MTL] Seg {i} issues: {'; '.join(qc['issues'])}", flush=True)
+
+                except Exception as e:
+                    self._report("synthesize", 0.1 + 0.8 * ((i + 1) / len(segments)),
+                                 f"CB-Multilingual error on seg {i+1}: {e}, skipping...")
+                    continue
+
+                if not wav_path.exists() or wav_path.stat().st_size == 0:
+                    continue
+
+                tts_dur = self._get_duration(wav_path)
+                tts_data.append({
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "wav": wav_path,
+                    "duration": tts_dur,
+                })
+                self._report(
+                    "synthesize",
+                    0.1 + 0.8 * ((i + 1) / len(segments)),
+                    f"Synthesized {i + 1}/{len(segments)} segments (CB-Multilingual)...",
+                )
+        finally:
+            if model is not None:
+                del model
+            torch.cuda.empty_cache()
+
+        return tts_data
+
+    def _get_voice_ref(self, min_duration: int = 6, sample_rate: int = 24000) -> Optional[Path]:
+        """Extract a voice reference clip from original audio for voice cloning.
+
+        Returns path to a WAV file suitable for Chatterbox voice cloning,
+        or None if no audio is available.
+        """
+        ref_wav = self.cfg.work_dir / f"voice_ref_{sample_rate}.wav"
+        if ref_wav.exists():
+            return ref_wav
+
+        # Check for user-provided reference first
+        user_ref = Path(__file__).resolve().parent / "voices" / "my_voice_refs"
+        if user_ref.exists():
+            ref_files = list(user_ref.glob("*.wav")) + list(user_ref.glob("*.mp3"))
+            if ref_files:
+                # Convert to correct sample rate
+                subprocess.run(
+                    [self._ffmpeg, "-y", "-i", str(ref_files[0]),
+                     "-t", "15", "-ar", str(sample_rate), "-ac", "1",
+                     str(ref_wav)],
+                    check=True, capture_output=True,
+                )
+                return ref_wav
+
+        # Extract from original audio
+        audio_raw = self.cfg.work_dir / "audio_raw.wav"
+        if audio_raw.exists():
+            subprocess.run(
+                [self._ffmpeg, "-y", "-i", str(audio_raw),
+                 "-t", "15", "-ar", str(sample_rate), "-ac", "1",
+                 str(ref_wav)],
+                check=True, capture_output=True,
+            )
+            if ref_wav.exists() and ref_wav.stat().st_size > 0:
+                return ref_wav
+
+        return None
 
     def _tts_cosyvoice2(self, segments):
         """Generate TTS using CosyVoice 2 — near-ElevenLabs quality, completely free.
@@ -4371,7 +4775,9 @@ class Pipeline:
         total = len(segments)
         try:
             for i, seg in enumerate(segments):
-                text = seg.get("text_translated", seg.get("text", "")).strip()
+                text = self._prepare_tts_text(
+                    seg.get("text_translated", seg.get("text", "")).strip()
+                )
                 if not text:
                     continue
 
@@ -4403,6 +4809,11 @@ class Pipeline:
                         resampled.rename(wav_path)
 
                     self._enhance_tts_wav(wav_path)
+                    # QC gate
+                    expected_dur = seg.get("end", 0) - seg.get("start", 0)
+                    qc = self._qc_check_wav(wav_path, expected_duration=expected_dur)
+                    if not qc["ok"]:
+                        print(f"[QC/CosyVoice2] Seg {i} issues: {'; '.join(qc['issues'])}", flush=True)
 
                 except Exception as e:
                     self._report("synthesize", 0.1 + 0.8 * ((i + 1) / total),
@@ -4755,11 +5166,179 @@ class Pipeline:
 
         return tts_data
 
-    async def _edge_tts_single(self, text, mp3_path):
-        """Generate a single segment with edge-tts."""
+    async def _edge_tts_single(self, text, mp3_path, voice=None, rate=None):
+        """Generate a single segment with edge-tts (results cached by text+voice+rate)."""
         import edge_tts
-        comm = edge_tts.Communicate(text, self.cfg.tts_voice, rate=self.cfg.tts_rate)
+        _voice = voice or self.cfg.tts_voice
+        _rate  = rate  or self.cfg.tts_rate
+
+        # Check TTS cache
+        cached_bytes = _cache.get_tts(text, _voice, _rate, "edge_tts")
+        if cached_bytes is not None:
+            Path(mp3_path).write_bytes(cached_bytes)
+            return
+
+        comm = edge_tts.Communicate(text, _voice, rate=_rate)
         await comm.save(str(mp3_path))
+
+        # Store in cache
+        try:
+            _cache.put_tts(text, _voice, _rate, "edge_tts", Path(mp3_path).read_bytes())
+        except Exception:
+            pass
+
+    # ── TTS text prep pass ────────────────────────────────────────────────
+    def _prepare_tts_text(self, text: str) -> str:
+        """Speech-optimize translated text before passing to TTS engine.
+
+        Separate from the rewritten translation — this is a speech-rendering pass:
+        - Insert commas at natural breath points (after 5+ word chunks without pause)
+        - Normalize ellipses for natural pause rhythm
+        - Expand digits to spoken form (basic: digits surrounded by spaces)
+        - Remove overly long clauses (Hindi verbosity reduction)
+        - Apply pronunciation dictionary
+        """
+        if not text:
+            return text
+
+        # Normalize ellipses → short pause comma
+        text = re.sub(r'\.{2,}', ',', text)
+
+        # Replace EM-dash with comma-pause
+        text = text.replace('—', ', ')
+        text = text.replace('–', ', ')
+
+        # Expand common digit patterns (1, 2, ..., 99) into Hindi spoken words
+        _DIGIT_HI = {
+            '0': 'शून्य', '1': 'एक', '2': 'दो', '3': 'तीन', '4': 'चार',
+            '5': 'पाँच', '6': 'छह', '7': 'सात', '8': 'आठ', '9': 'नौ',
+            '10': 'दस', '11': 'ग्यारह', '12': 'बारह', '13': 'तेरह',
+            '14': 'चौदह', '15': 'पंद्रह', '20': 'बीस', '25': 'पच्चीस',
+            '30': 'तीस', '50': 'पचास', '100': 'सौ', '1000': 'हज़ार',
+        }
+        if self.cfg.target_language in ('hi', 'mr', 'bn', 'gu', 'pa', 'ur'):
+            for num, word in sorted(_DIGIT_HI.items(), key=lambda x: -len(x[0])):
+                text = re.sub(r'(?<!\w)' + re.escape(num) + r'(?!\w)', word, text)
+
+        # Insert comma breath-pause after every 7+ word run with no punctuation
+        words = text.split()
+        if len(words) > 8:
+            result = []
+            run = 0
+            for w in words:
+                result.append(w)
+                run += 1
+                if re.search(r'[,।!?]$', w):
+                    run = 0
+                elif run >= 7:
+                    result[-1] = w + ','
+                    run = 0
+            text = ' '.join(result)
+
+        # Clean up double commas and trailing punctuation artefacts
+        text = re.sub(r',\s*,', ',', text)
+        text = re.sub(r',\s*([।!?])', r'\1', text)
+        text = text.strip().rstrip(',')
+
+        # Apply pronunciation dictionary
+        text = self._apply_pronunciation(text)
+
+        return text
+
+    # ── Auto-rerender logic ───────────────────────────────────────────────
+    def _simplify_text_for_retry(self, text: str, attempt: int) -> str:
+        """Return a simplified version of TTS text for retry attempts.
+
+        attempt 1 — punctuation tweak: add pauses, normalize
+        attempt 2 — shorten: drop trailing 20% of words
+        attempt 3 — minimal: keep only first sentence / 50% of words
+        """
+        if attempt == 1:
+            # Add a mid-sentence comma pause if none present
+            if ',' not in text and '।' not in text:
+                words = text.split()
+                if len(words) > 5:
+                    mid = len(words) // 2
+                    words.insert(mid, ',')
+                    text = ' '.join(words)
+            return text
+
+        elif attempt == 2:
+            words = text.split()
+            keep = max(3, int(len(words) * 0.80))
+            return ' '.join(words[:keep])
+
+        else:  # attempt 3
+            # First sentence only
+            for sep in ('।', '.', '!', '?'):
+                if sep in text:
+                    part = text.split(sep)[0].strip()
+                    if len(part) > 5:
+                        return part + sep
+            # fallback: 50%
+            words = text.split()
+            return ' '.join(words[:max(3, len(words) // 2)])
+
+    def _rerender_edge_segment(
+        self, text: str, voice: str, wav_out: Path, expected_dur: float
+    ) -> dict:
+        """Attempt to render a single segment with edge-tts up to 3 times.
+
+        Strategy:
+          Attempt 0: original text
+          Attempt 1: punctuation tweak (add breath comma)
+          Attempt 2: shorten text by 20%
+          Attempt 3: shorten to 50% / first sentence
+
+        Returns the QC result dict of the best attempt.
+        Best = passes QC; if none pass, returns last attempt's QC.
+        """
+        import edge_tts
+        best_qc = None
+        mp3_tmp = wav_out.with_suffix(".retry.mp3")
+        wav_tmp = wav_out.with_suffix(".retry.wav")
+
+        current_text = text
+        for attempt in range(4):
+            if attempt > 0:
+                current_text = self._simplify_text_for_retry(text, attempt)
+                if not current_text:
+                    break
+
+            try:
+                asyncio.run(self._edge_tts_single(current_text, mp3_tmp, voice=voice))
+                subprocess.run(
+                    [self._ffmpeg, "-y", "-i", str(mp3_tmp),
+                     "-af", f"atempo=1.25",
+                     "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
+                     str(wav_tmp)],
+                    check=True, capture_output=True,
+                )
+                mp3_tmp.unlink(missing_ok=True)
+                self._enhance_tts_wav(wav_tmp)
+                qc = self._qc_check_wav(wav_tmp, expected_duration=expected_dur)
+                qc["attempt"] = attempt
+                qc["text_used"] = current_text
+
+                if qc["ok"]:
+                    # This attempt passed — use it
+                    wav_tmp.rename(wav_out)
+                    return qc
+
+                best_qc = qc  # keep last for fallback
+
+            except Exception as e:
+                print(f"[Rerender] attempt {attempt} exception: {e}", flush=True)
+                wav_tmp.unlink(missing_ok=True)
+                mp3_tmp.unlink(missing_ok=True)
+
+        # No attempt passed — keep last wav if it exists, else original stays
+        if wav_tmp.exists():
+            wav_tmp.rename(wav_out)
+        mp3_tmp.unlink(missing_ok=True)
+        if best_qc:
+            best_qc["manual_review"] = True
+        return best_qc or {"ok": False, "issues": ["all retries failed"], "manual_review": True}
 
     def _tts_edge(self, segments, voice_map=None, work_dir=None):
         """Generate TTS using edge-tts (free Microsoft voices).
@@ -4775,9 +5354,11 @@ class Pipeline:
         _tts_failures = [0]  # mutable counter for async closure
 
         async def generate_one(i, seg, semaphore):
-            text = seg.get("text_translated", seg.get("text", "")).strip()
-            if not text:
+            raw_text = seg.get("text_translated", seg.get("text", "")).strip()
+            if not raw_text:
                 return
+            # TTS text prep: speech-optimize + pronunciation dictionary
+            text = self._prepare_tts_text(raw_text)
             seg_voice = default_voice
             if voice_map and "speaker_id" in seg:
                 seg_voice = voice_map.get(seg["speaker_id"], default_voice)
@@ -4836,14 +5417,50 @@ class Pipeline:
                 check=True, capture_output=True,
             )
             mp3.unlink(missing_ok=True)
+            # Enhance: silence trim + loudness norm
+            self._enhance_tts_wav(wav)
             tts_dur = self._get_duration(wav)
+
+            # QC gate + auto-rerender on failure
+            expected_dur = seg.get("end", 0) - seg.get("start", 0)
+            qc = self._qc_check_wav(wav, expected_duration=expected_dur)
+            rerender_count = 0
+            manual_review = False
+
+            if not qc["ok"]:
+                print(f"[QC] Seg {i} issues: {'; '.join(qc['issues'])} | "
+                      f"dur={qc['duration']:.2f}s expected={expected_dur:.2f}s — retrying...",
+                      flush=True)
+                # Auto-rerender: prepare TTS text and try up to 3 attempts
+                tts_text = self._prepare_tts_text(
+                    seg.get("text_translated", seg.get("text", "")).strip()
+                )
+                seg_voice = default_voice
+                if voice_map and "speaker_id" in seg:
+                    seg_voice = voice_map.get(seg["speaker_id"], default_voice)
+
+                retry_qc = self._rerender_edge_segment(tts_text, seg_voice, wav, expected_dur)
+                rerender_count = retry_qc.get("attempt", 0) + 1
+                manual_review = retry_qc.get("manual_review", False)
+
+                if manual_review:
+                    print(f"[QC] Seg {i} → MANUAL REVIEW after {rerender_count} rerenders", flush=True)
+                else:
+                    print(f"[QC] Seg {i} → passed on attempt {rerender_count}", flush=True)
+
+                tts_dur = self._get_duration(wav)
+
             return {
                 "start": seg["start"],
                 "end": seg["end"],
                 "wav": wav,
                 "duration": tts_dur,
                 "_order": i,
+                "_orig_seg_idx": i,   # original index into segments[] for review queue lookup
                 "_already_sped": True,
+                "_rerender_count": rerender_count,
+                "_manual_review": manual_review,
+                "_qc_ok": qc["ok"],
             }
 
         tts_data = []
@@ -4854,10 +5471,35 @@ class Pipeline:
                 if result:
                     tts_data.append(result)
 
-        # Sort back to original order and strip internal key
+        # Sort back to original order and collect metrics
         tts_data.sort(key=lambda x: x.get("_order", 0))
+        total_rerenders = 0
+        review_queue = []
         for t in tts_data:
+            rc = t.pop("_rerender_count", 0)
+            mr = t.pop("_manual_review", False)
+            orig_idx = t.pop("_orig_seg_idx", None)
+            total_rerenders += rc
             t.pop("_order", None)
+            t.pop("_qc_ok", None)
+            if mr:
+                # Look up original segment by its index (not zip position — some segments are empty/skipped)
+                orig_seg = segments[orig_idx] if orig_idx is not None and orig_idx < len(segments) else {}
+                review_queue.append({
+                    "segment_idx": orig_idx,
+                    "start": t.get("start", 0),
+                    "end": t.get("end", 0),
+                    "source_text": orig_seg.get("text", ""),
+                    "translated_text": orig_seg.get("text_translated", ""),
+                    "emotion": orig_seg.get("emotion", "neutral"),
+                    "rerender_count": rc,
+                    "issues": ["auto-rerender exhausted"],
+                })
+        if total_rerenders > 0 or review_queue:
+            print(f"[QC] Edge TTS: {total_rerenders} rerenders, "
+                  f"{len(review_queue)} for manual review", flush=True)
+        if review_queue:
+            self._save_manual_review_queue(review_queue)
         return tts_data
 
     def _build_fitted_audio(self, video_path, audio_raw, tts_data, total_video_duration):
@@ -4891,8 +5533,10 @@ class Pipeline:
                 continue
 
             ratio = tts_dur / original_dur  # > 1 = TTS is longer, need to speed up
+            gap_ms = abs(tts_dur - original_dur) * 1000
 
-            if abs(ratio - 1.0) < 0.05:
+            # Tier 1: within 80ms — accept as-is
+            if gap_ms <= self.FIT_PASS_MS:
                 fitted_segments.append({
                     "start": seg_start,
                     "wav": tts_wav,
@@ -4900,7 +5544,13 @@ class Pipeline:
                 })
                 continue
 
-            # Clamp ratio: slow down max 1.1x, speed up max 1.25x
+            # Tier 2: 80–250ms — stretch within preferred limits
+            # Tier 3: >250ms — still stretch if within hard limits, but flag as needing rewrite
+            if gap_ms > self.FIT_REWRITE_MS and ratio > self.FIT_RATIO_PREF_MAX:
+                print(f"[FIT] Seg {idx}: gap {gap_ms:.0f}ms exceeds rewrite threshold "
+                      f"(ratio={ratio:.3f}) — stretching within hard limits", flush=True)
+
+            # Clamp ratio to hard limits
             clamped_ratio = max(self.SPEED_MIN, min(ratio, self.SPEED_MAX))
 
             stretched_wav = self.cfg.work_dir / f"fitted_{idx:04d}.wav"
@@ -5316,7 +5966,13 @@ class Pipeline:
                 "-i", str(tts),
                 "-i", str(bg_track),
                 "-filter_complex",
-                f"[1:a]volume={original_vol}[orig];[0:a][orig]amix=inputs=2:duration=first:dropout_transition=2[out]",
+                (
+                    f"[0:a]asplit=2[tts_out][tts_sc];"
+                    f"[1:a]volume={original_vol}[bg_raw];"
+                    f"[bg_raw][tts_sc]sidechaincompress="
+                    f"threshold=0.02:ratio=3:attack=20:release=300:makeup=1[bg_duck];"
+                    f"[tts_out][bg_duck]amix=inputs=2:duration=first:dropout_transition=2[out]"
+                ),
                 "-map", "[out]",
                 "-ar", str(self.SAMPLE_RATE),
                 "-ac", str(self.N_CHANNELS),
@@ -5391,7 +6047,14 @@ class Pipeline:
                  "-i", str(dubbed_audio),
                  "-i", str(bg_track),
                  "-filter_complex",
-                 f"[1:a]volume={vol}[bg];[0:a][bg]amix=inputs=2:duration=longest",
+                 (
+                     f"[0:a]asplit=2[dub_out][dub_sc];"
+                     f"[1:a]volume={vol}[bg_raw];"
+                     f"[bg_raw][dub_sc]sidechaincompress="
+                     f"threshold=0.02:ratio=3:attack=20:release=300:makeup=1[bg_duck];"
+                     f"[dub_out][bg_duck]amix=inputs=2:duration=longest[out]"
+                 ),
+                 "-map", "[out]",
                  "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
                  str(mixed_audio)],
                 check=True, capture_output=True,
@@ -5405,13 +6068,13 @@ class Pipeline:
 
     # ── Audio enhancement ─────────────────────────────────────────────────
     def _enhance_tts_wav(self, wav_path: Path) -> Path:
-        """Normalize speech loudness and apply light compression per TTS segment.
+        """Normalize speech loudness, trim silence, and apply light compression per TTS segment.
 
-        Uses:
-        - speechnorm: speech-aware loudness normalization (equalises quiet/loud segments)
-        - acompressor: light 3:1 compression for consistent dynamics
-        Result: every segment plays at the same perceived loudness, no more
-        jarring volume jumps between sentences.
+        Filter chain:
+        1. silenceremove: strip leading/trailing silence (≥30ms below -50dB)
+        2. afade in/out: 10ms fade to eliminate clicks at segment edges
+        3. speechnorm: speech-aware loudness normalization
+        4. acompressor: light 3:1 compression for consistent dynamics
         """
         enhanced = wav_path.with_suffix(".enh.wav")
         try:
@@ -5419,8 +6082,12 @@ class Pipeline:
                 [
                     self._ffmpeg, "-y", "-i", str(wav_path),
                     "-af", (
+                        "silenceremove=start_periods=1:start_silence=0.03:start_threshold=-50dB"
+                        ":stop_periods=-1:stop_silence=0.03:stop_threshold=-50dB,"
+                        "afade=t=in:st=0:d=0.01,"
                         "speechnorm=e=50:r=0.0001:l=1,"
-                        "acompressor=threshold=-20dB:ratio=3:attack=5:release=50:makeup=2"
+                        "acompressor=threshold=-20dB:ratio=3:attack=5:release=50:makeup=2,"
+                        "areverse,afade=t=in:st=0:d=0.01,areverse"
                     ),
                     "-ar", str(self.SAMPLE_RATE), "-ac", str(self.N_CHANNELS),
                     str(enhanced),
@@ -5432,6 +6099,95 @@ class Pipeline:
         except Exception:
             enhanced.unlink(missing_ok=True)  # keep original on failure
         return wav_path
+
+    def _qc_check_wav(self, wav_path: Path, expected_duration: float = 0.0) -> dict:
+        """QC gate: inspect a TTS WAV file for common failure modes.
+
+        Checks:
+        - silence_ratio: fraction of near-silent samples (>0.8 = TTS likely failed)
+        - clipping: peak amplitude > 0.98 (distortion)
+        - duration_ratio: actual / expected (>2.5 or <0.2 = something went wrong)
+
+        Returns dict with keys: ok, silence_ratio, clipping, duration, duration_ratio, issues
+        """
+        issues = []
+        result = {"ok": True, "silence_ratio": 0.0, "clipping": False,
+                  "duration": 0.0, "duration_ratio": 1.0, "issues": issues}
+        try:
+            with wave.open(str(wav_path), "rb") as wf:
+                frames = wf.getnframes()
+                framerate = wf.getframerate()
+                sampwidth = wf.getsampwidth()
+                nchannels = wf.getnchannels()
+                actual_dur = frames / framerate
+                result["duration"] = actual_dur
+
+                raw = wf.readframes(frames)
+
+            if expected_duration > 0.1:
+                ratio = actual_dur / expected_duration
+                result["duration_ratio"] = ratio
+                if ratio > 2.5:
+                    issues.append(f"TTS {ratio:.1f}x longer than slot")
+                elif ratio < 0.15:
+                    issues.append(f"TTS only {ratio:.1%} of expected length")
+
+            # Sample-level checks (mono mix for speed)
+            if sampwidth == 2 and frames > 0:
+                import struct
+                samples_per_frame = nchannels
+                n_samples = len(raw) // (sampwidth * samples_per_frame)
+                # Unpack first channel only (every nchannels-th sample)
+                fmt = f"<{n_samples * samples_per_frame}h"
+                all_samples = struct.unpack_from(fmt, raw[:n_samples * sampwidth * samples_per_frame])
+                mono = [all_samples[i * nchannels] for i in range(n_samples)]
+
+                if mono:
+                    peak = max(abs(s) for s in mono) / 32767.0
+                    result["clipping"] = peak > 0.98
+                    if result["clipping"]:
+                        issues.append(f"Clipping detected (peak={peak:.3f})")
+
+                    silent_count = sum(1 for s in mono if abs(s) < 328)  # < 1% of max
+                    silence_ratio = silent_count / len(mono)
+                    result["silence_ratio"] = silence_ratio
+                    if silence_ratio > 0.80:
+                        issues.append(f"Mostly silent ({silence_ratio:.0%})")
+
+        except Exception as e:
+            issues.append(f"QC read error: {e}")
+
+        result["ok"] = len(issues) == 0
+        if len(issues) == 0:
+            result["qc_status"] = "pass"
+        elif any("manual_review" in str(i).lower() for i in issues):
+            result["qc_status"] = "manual_review"
+        elif len(issues) == 1 and "duration" in issues[0].lower():
+            result["qc_status"] = "pass_with_warning"
+        else:
+            result["qc_status"] = "rerender"
+        return result
+
+    def _save_manual_review_queue(self, review_items: list):
+        """Persist segments that need manual review to a JSON file in the job output.
+
+        Saved to: {work_dir}/../manual_review_queue.json (next to dubbed.mp4)
+        Each item: {segment_idx, start, end, source_text, translated_text,
+                    emotion, issues, rerender_count}
+        """
+        if not self.cfg.enable_manual_review or not review_items:
+            return
+        import json as _json
+        out_path = self.cfg.work_dir.parent / "manual_review_queue.json"
+        try:
+            existing = []
+            if out_path.exists():
+                existing = _json.loads(out_path.read_text(encoding="utf-8"))
+            existing.extend(review_items)
+            out_path.write_text(_json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"[ManualReview] {len(review_items)} segments saved → {out_path}", flush=True)
+        except Exception as e:
+            print(f"[ManualReview] Failed to save queue: {e}", flush=True)
 
     # ── Video muxing ─────────────────────────────────────────────────────
     def _mux_replace_audio(self, video_path: Path, audio_path: Path, output_path: Path):
@@ -5445,8 +6201,8 @@ class Pipeline:
                 "-c:v", "copy",
                 "-map", "0:v:0",
                 "-map", "1:a:0",
-                # EBU R128 loudness target: -14 LUFS (YouTube standard), -1.5 dB true peak
-                "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
+                # EBU R128 loudness target: -16 LUFS (broadcast/web standard), -1.5 dB true peak
+                "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
                 "-c:a", "aac", "-b:a", self.cfg.audio_bitrate,
                 str(output_path),
             ],

@@ -3,7 +3,7 @@ import type { Metadata } from 'next';
 import Sidebar from '@/components/Sidebar';
 
 export const metadata: Metadata = {
-    title: 'VoiceDub - YouTube Video Dubbing',
+    title: 'YouTube Hindi Dubbing',
     description: 'Dub YouTube videos into Hindi with AI-powered voice synthesis.',
 };
 

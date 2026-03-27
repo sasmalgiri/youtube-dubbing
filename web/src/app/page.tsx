@@ -36,6 +36,7 @@ export default function HomePage() {
         split_duration: 0,
         fast_assemble: false,
         dub_chain: [],
+        enable_manual_review: true,
     });
     const [currentUrl, setCurrentUrl] = useState('');
     const [submitting, setSubmitting] = useState(false);

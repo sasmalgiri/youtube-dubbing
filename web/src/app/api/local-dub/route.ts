@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
         }
 
         // Create temp directory for download
-        tempDir = await mkdtemp(path.join(tmpdir(), 'voicedub-'));
+        tempDir = await mkdtemp(path.join(tmpdir(), 'hindidub-'));
         videoPath = path.join(tempDir, 'video.mp4');
 
         // Download video locally using yt-dlp

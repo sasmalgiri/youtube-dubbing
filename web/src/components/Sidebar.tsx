@@ -41,7 +41,7 @@ export default function Sidebar({ onNewDubbing }: SidebarProps) {
                     </svg>
                 </div>
                 <span className="text-lg font-semibold text-text-primary">
-                    Voice<span className="text-primary">Dub</span>
+                    Hindi<span className="text-primary">Dub</span>
                 </span>
             </div>
 

@@ -33,7 +33,8 @@ const PRESET_LABELS: { key: keyof LinkPreset; label: string; type: 'select' | 't
     {
         key: 'asr_model', label: 'Whisper', type: 'select',
         options: [
-            { value: 'base', label: 'Base' }, { value: 'medium', label: 'Medium' },
+            { value: 'base', label: 'Base' }, { value: 'small', label: 'Small' },
+            { value: 'medium', label: 'Medium' }, { value: 'large-v3-turbo', label: 'Turbo' },
             { value: 'large-v3', label: 'Large-v3' },
         ],
     },
@@ -44,6 +45,7 @@ const PRESET_LABELS: { key: keyof LinkPreset; label: string; type: 'select' | 't
             { value: 'fast', label: 'Fast' }, { value: 'medium', label: 'Medium' },
         ],
     },
+    { key: 'use_cosyvoice', label: 'CosyVoice 2', type: 'toggle' },
     { key: 'use_chatterbox', label: 'Chatterbox', type: 'toggle' },
     { key: 'use_edge_tts', label: 'Edge TTS', type: 'toggle' },
     { key: 'use_coqui_xtts', label: 'Coqui XTTS', type: 'toggle' },
@@ -51,6 +53,7 @@ const PRESET_LABELS: { key: keyof LinkPreset; label: string; type: 'select' | 't
     { key: 'prefer_youtube_subs', label: 'YT Subs', type: 'toggle' },
     { key: 'use_yt_translate', label: 'YT Translate', type: 'toggle' },
     { key: 'audio_priority', label: 'Audio Priority', type: 'toggle' },
+    { key: 'enable_manual_review', label: 'Manual Review', type: 'toggle' },
 ];
 
 function PresetSummary({ preset }: { preset?: LinkPreset }) {
@@ -58,6 +61,7 @@ function PresetSummary({ preset }: { preset?: LinkPreset }) {
     const parts: string[] = [];
     if (preset.target_language) parts.push(preset.target_language.toUpperCase());
     if (preset.translation_engine && preset.translation_engine !== 'auto') parts.push(preset.translation_engine);
+    if (preset.use_cosyvoice) parts.push('CosyVoice');
     if (preset.use_chatterbox) parts.push('CBX');
     if (preset.use_edge_tts) parts.push('Edge');
     if (preset.use_coqui_xtts) parts.push('XTTS');

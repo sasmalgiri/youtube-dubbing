@@ -24,6 +24,7 @@ export interface DubbingSettings {
     split_duration: number;
     fast_assemble: boolean;
     dub_chain: string[];
+    enable_manual_review: boolean;
 }
 
 interface SettingsPanelProps {
@@ -254,7 +255,7 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                     {/* TTS Engines */}
                     <div>
                         <p className="text-sm font-medium text-text-primary mb-1">TTS Engines</p>
-                        <p className="text-[10px] text-text-muted mb-3">First enabled engine is used as priority. CosyVoice 2 = near-ElevenLabs quality, voice clones original speaker, free GPU. Edge-TTS = reliable fallback.</p>
+                        <p className="text-[10px] text-text-muted mb-3">English dub auto-uses: Chatterbox-Turbo → Chatterbox Multilingual → XTTS v2 → Edge-TTS (all free, local). Non-English uses toggles below. CosyVoice 2 = best for Hindi.</p>
                         <div className="space-y-3">
                             {/* CosyVoice 2 */}
                             <div className="flex items-center justify-between">
@@ -453,8 +454,6 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                                     <p className="text-xs text-text-muted">TTS speaks naturally, video adjusts to match (best for listening)</p>
                                 </div>
                                 <button
-                                    type="button"
-                                    title="Toggle audio priority"
                                     type="button" title="Toggle Audio Priority" onClick={() => update({ audio_priority: !settings.audio_priority })}
                                     className={`
                                         w-11 h-6 rounded-full transition-colors relative
@@ -531,7 +530,6 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                                     <p className="text-xs text-text-muted">In-memory audio (instant). Off = ffmpeg mixing (slower, preserves overlapping audio)</p>
                                 </div>
                                 <button
-                                    type="button"
                                     type="button" title="Toggle Fast Assemble" onClick={() => update({ fast_assemble: !settings.fast_assemble })}
                                     className={`
                                         w-11 h-6 rounded-full transition-colors relative
@@ -541,6 +539,26 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                                     <div className={`
                                         w-4 h-4 rounded-full bg-white absolute top-1 transition-transform
                                         ${settings.fast_assemble ? 'translate-x-6' : 'translate-x-1'}
+                                    `} />
+                                </button>
+                            </div>
+
+                            {/* Manual Review Queue */}
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <p className="text-sm text-text-primary">Manual Review Queue</p>
+                                    <p className="text-xs text-text-muted">Save segments that failed QC after all retries to manual_review_queue.json for inspection</p>
+                                </div>
+                                <button
+                                    type="button" title="Toggle Manual Review Queue" onClick={() => update({ enable_manual_review: !settings.enable_manual_review })}
+                                    className={`
+                                        w-11 h-6 rounded-full transition-colors relative
+                                        ${settings.enable_manual_review ? 'bg-primary' : 'bg-white/10'}
+                                    `}
+                                >
+                                    <div className={`
+                                        w-4 h-4 rounded-full bg-white absolute top-1 transition-transform
+                                        ${settings.enable_manual_review ? 'translate-x-6' : 'translate-x-1'}
                                     `} />
                                 </button>
                             </div>
