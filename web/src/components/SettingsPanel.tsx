@@ -180,9 +180,9 @@ export default function SettingsPanel({ settings, onChange }: SettingsPanelProps
                         </div>
                         <div className="grid grid-cols-4 gap-2">
                             {[
-                                { value: 'nllb_polish', label: 'NLLB+Polish', desc: 'NLLB → LLM → Rules' },
+                                { value: 'nllb_polish', label: 'IndicTrans2+', desc: 'IndicTrans2 → LLM → Rules' },
                                 { value: 'google_polish', label: 'Google+Polish', desc: 'Fast Google → LLM polish' },
-                                { value: 'nllb', label: 'NLLB', desc: 'Local meaning model' },
+                                { value: 'nllb', label: 'IndicTrans2', desc: 'Local meaning model' },
                                 { value: 'ollama', label: 'Ollama', desc: 'Local LLM (GPU)' },
                                 { value: 'hinglish', label: 'Hinglish AI', desc: 'Custom Hindi model' },
                                 { value: 'google', label: 'Google', desc: 'Free, basic' },

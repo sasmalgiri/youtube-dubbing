@@ -1023,6 +1023,15 @@ def _run_job_with_srt(job: Job, req: JobCreateRequest, srt_path: Path):
         except Exception:
             pass
 
+        # Send SRT pair to hinglish-ai trainer for auto-training
+        try:
+            work_dir = OUTPUTS / job.id / "work"
+            source_srt = work_dir / "transcript_source.srt"
+            if source_srt.exists() and srt_path.exists():
+                _send_training_data(source_srt, srt_path, source_lang=req.source_language)
+        except Exception:
+            pass
+
         job.overall_progress = 1.0
         job.state = "done"
         job.message = "Complete"
