@@ -1,107 +1,163 @@
-# YouTube Dubbing Application
+# YouTube Hindi Dubbing App
 
-This project is a video dubbing application that processes YouTube videos and generates dubbed audio tracks with subtitles. The application utilizes various components for speech-to-text, translation, text-to-speech, and subtitle generation.
+An end-to-end platform that takes an English YouTube video (URL or file) and produces a naturally-timed Hindi dub with synchronised subtitles. Built with a Next.js web UI and a FastAPI processing backend.
 
-## Features
+---
 
-- Download YouTube videos and captions
-- Extract audio from videos
-- Transcribe audio to text
-- Translate transcriptions to different languages
-- Synthesize dubbed audio from translated text
-- Generate subtitles in SRT and WebVTT formats
+## What it does
 
-## Project Structure
+Given a YouTube link or uploaded video, the system:
+
+1. Downloads the video and extracts clean audio
+2. Transcribes English speech with Whisper (word-level timestamps)
+3. Segments transcript into natural sentence units
+4. Translates to Hindi with duration-aware LLM prompting (keeps target length close to the source slot)
+5. Synthesises Hindi speech with a chosen TTS voice
+6. Fits each segment to its original time slot (per-segment stretch + verification)
+7. Assembles the final dubbed audio, muxes it back onto the video, and emits SRT / WebVTT subtitles
+
+The result is a dubbed MP4, a Hindi audio track, and subtitle files — all downloadable from the web UI.
+
+---
+
+## Highlights
+
+- **Four pipeline modes** — switchable from the UI (fast / balanced / high-fidelity / studio), each trading speed against accuracy of lip-timing and prosody.
+- **Multi-provider resilience** — translation rotates across OpenAI, Gemini, Groq, and Cerebras keys; TTS supports ElevenLabs, Google Cloud TTS, Sarvam, Fish-Speech, and CosyVoice.
+- **Slot-accurate timing** — every translated sentence is verified against the original clip's duration, with recompute + global stretch passes so the dub never drifts out of sync.
+- **Async job model** — long jobs run in the background; the UI streams live `[N%]` progress for every stage (download, ASR, translate, TTS, fit, assembly).
+- **Local-first job store** — SQLite WAL with optional Supabase dual-write for real-time cross-device sync.
+- **Persistent state** — saved links, completed URLs, and a translation glossary so re-runs reuse prior decisions.
+
+---
+
+## Architecture
+
+```
+┌──────────────────────┐          ┌────────────────────────────────┐
+│  Web UI (Next.js)    │  HTTPS   │  Backend API (FastAPI)         │
+│  • Job submit/track  │ ───────▶ │  • /jobs, /voices, /presets    │
+│  • Live progress     │ ◀─────── │  • Job queue + SQLite store    │
+│  • Result download   │          │  • Dubbing pipeline modules    │
+└──────────────────────┘          └────────────────────────────────┘
+                                             │
+                            ┌────────────────┼────────────────┐
+                            ▼                ▼                ▼
+                       Whisper ASR     LLM Translate      TTS Voices
+                    (word timestamps)  (OpenAI/Gemini/    (ElevenLabs/
+                                        Groq/Cerebras)     Google/Sarvam/
+                                                           Fish-Speech)
+```
+
+### Repository layout
 
 ```
 youtube-dubbing-app
-├── src
-│   ├── app.py                # Main entry point of the application
-│   ├── cli.py                # Command-line interface for user interaction
-│   ├── dubbing               # Dubbing related functionalities
-│   ├── io                    # Input/Output operations
-│   ├── stt                   # Speech-to-text functionalities
-│   ├── mt                    # Machine translation functionalities
-│   ├── tts                   # Text-to-speech functionalities
-│   ├── subtitles             # Subtitle generation functionalities
-│   ├── models                # Data models and types
-│   └── utils                 # Utility functions
-├── tests                     # Unit tests for the application
-├── scripts                   # Scripts for downloading and processing
-├── .vscode                   # VS Code configuration files
-├── .gitignore                # Git ignore file
-├── .env.example              # Example environment variables
-├── requirements.txt          # Python dependencies
-├── pyproject.toml           # Project metadata
-└── README.md                 # Project documentation
+├── web/                          # Next.js frontend (deployed to Vercel)
+│   └── src/
+│       ├── app/                  # Pages: home, jobs, batch, API routes
+│       └── components/           # UI: ProgressPipeline, PresetTabs, VoiceSelector, ...
+├── backend/                      # FastAPI server + dubbing engine
+│   ├── app.py                    # HTTP API
+│   ├── pipeline.py               # Top-level job orchestration
+│   ├── jobstore.py               # SQLite + optional Supabase sync
+│   ├── cache.py, metrics.py      # Cache + telemetry
+│   └── dubbing/
+│       ├── oneflow.py            # End-to-end single-flow runner
+│       ├── runner.py             # Mode dispatcher
+│       ├── asr_runner.py         # Whisper wrapper
+│       ├── translation.py        # Multi-provider translate w/ key rotation
+│       ├── tts_bridge.py         # Unified TTS interface
+│       ├── srtdub.py             # SRT-driven dubbing flow
+│       ├── wordchunk.py          # Word-level chunking
+│       ├── sentence_segmenter.py # Natural sentence boundaries
+│       ├── slot_recompute.py     # Timing slot recomputation
+│       ├── slot_verify.py        # Duration verification
+│       ├── global_stretch.py     # Global tempo alignment
+│       ├── presets.py            # Pipeline-mode presets
+│       └── ...
+├── src/                          # Standalone CLI (legacy + scripting entry)
+├── scripts/                      # Utility scripts
+└── tests/                        # Unit tests
 ```
 
-## Installation
+---
 
-1. Clone the repository:
-   ```
-   git clone <repository-url>
-   cd youtube-dubbing-app
-   ```
+## Quick start (local)
 
-2. Create a virtual environment:
-   ```
-   python -m venv venv
-   source venv/bin/activate  # On Windows use `venv\Scripts\activate`
-   ```
+### Prerequisites
 
-3. Install the required dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
+- Python 3.10+ with `ffmpeg` on PATH
+- Node.js 18+
+- At least one LLM API key (Groq free tier works out of the box)
 
-## Usage
+### 1. Backend
 
-To run the application, use the command line interface defined in `src/cli.py`. You can download a YouTube video, transcribe it, translate the transcription, and synthesize the dubbed audio.
+```bash
+cd backend
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
 
-## Web UI (Vercel) + Backend (Free)
+pip install -r requirements.txt
+cp .env.example .env          # then fill in API keys
+uvicorn app:app --host 0.0.0.0 --port 8000
+```
 
-Vercel can host the **web UI**, but the actual dubbing work (FFmpeg + Whisper + TTS) must run on a separate backend.
-
-### Frontend (Vercel)
-
-The Next.js UI lives in `web/`.
-
-1) Install deps:
+### 2. Frontend
 
 ```bash
 cd web
 npm install
+# point the UI at your backend
+echo "NEXT_PUBLIC_API_BASE_URL=http://localhost:8000" > .env.local
+npm run dev
 ```
 
-2) Set environment variable in Vercel:
+Open http://localhost:3000 and paste a YouTube URL.
 
-- `NEXT_PUBLIC_API_BASE_URL` = your backend base URL (example: `https://your-backend.onrender.com`)
+---
 
-3) Deploy the `web/` folder to Vercel.
+## Configuration
 
-### Backend (Free tier suggestion: Render)
+Copy `backend/.env.example` to `backend/.env` and fill the keys you want to use:
 
-The FastAPI backend lives in `backend/` and exposes:
+| Service       | Purpose                         | Free tier                       |
+| ------------- | ------------------------------- | ------------------------------- |
+| Groq          | Translation (Llama 3.3 70B)     | Yes                             |
+| Gemini        | Translation (Gemma / Gemini)    | Yes (30 RPM per key)            |
+| OpenAI        | Translation (GPT-4o)            | Paid                            |
+| Cerebras      | Translation (fastest LLM)       | 1M tokens/day                   |
+| ElevenLabs    | TTS (premium voices)            | Limited                         |
+| Google TTS    | TTS                             | 1M chars/month                  |
+| Supabase      | Real-time job sync (optional)   | Yes                             |
+| HuggingFace   | Speaker diarization (optional)  | Yes                             |
 
-- `GET /voices`
-- `POST /jobs` (multipart upload)
-- `GET /jobs/{id}`
-- `GET /jobs/{id}/result`
+Only add the keys for services you actually plan to use — any missing provider is skipped gracefully.
 
-Local run (after installing backend deps into your Python env):
+---
 
-```bash
-pip install -r backend/requirements.txt
-uvicorn backend.app:app --host 0.0.0.0 --port 8000
-```
+## Deployment
 
-Then point the frontend to `http://localhost:8000`.
+- **Frontend**: deploy the `web/` folder to Vercel; set `NEXT_PUBLIC_API_BASE_URL` to your backend's public URL.
+- **Backend**: any host that runs Python + FFmpeg with GPU access for Whisper (Render, Railway, Fly.io, or a dedicated GPU VM). The repo includes `start.bat` / `start-backend-stable.bat` for local Windows runs.
 
-## Contributing
+---
 
-Contributions are welcome! Please open an issue or submit a pull request for any enhancements or bug fixes.
+## API surface
+
+| Method | Endpoint              | Purpose                         |
+| ------ | --------------------- | ------------------------------- |
+| GET    | `/voices`             | List available TTS voices       |
+| GET    | `/presets`            | List pipeline-mode presets      |
+| POST   | `/jobs`               | Submit a new dubbing job        |
+| GET    | `/jobs/{id}`          | Job status + progress stream    |
+| GET    | `/jobs/{id}/result`   | Download final assets           |
+
+---
 
 ## License
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+MIT — see the LICENSE file for details.
