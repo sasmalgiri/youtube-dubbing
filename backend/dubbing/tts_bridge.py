@@ -38,27 +38,47 @@ def export_json(cues: List[Cue], output_path: Path):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def export_srt(cues: List[Cue], output_path: Path, text_key: str = "text_hi_display"):
-    """Export as SRT subtitle file."""
+def export_srt(cues: List[Cue], output_path: Path, text_key: str = "text_hi_display",
+               use_revised_timeline: bool = False):
+    """Export as SRT subtitle file.
+
+    use_revised_timeline: if True and slot recompute has run, use new_start/new_end.
+    """
     with open(output_path, "w", encoding="utf-8") as f:
         srt_idx = 1
         for cue in cues:
             text = getattr(cue, text_key, "") or cue.text_hi_fit or cue.text_hi_raw
             if not text.strip():
                 continue
+            if use_revised_timeline and cue.new_start is not None and cue.new_end is not None:
+                start = cue.new_start
+                end = cue.new_end
+            else:
+                start = cue.start
+                end = cue.end
             f.write(f"{srt_idx}\n")
-            f.write(f"{_format_srt_time(cue.start)} --> {_format_srt_time(cue.end)}\n")
+            f.write(f"{_format_srt_time(start)} --> {_format_srt_time(end)}\n")
             f.write(f"{text}\n\n")
             srt_idx += 1
 
 
 def export_tts_segments(cues: List[Cue]) -> List[dict]:
-    """Export as pipeline-compatible TTS segment list (for existing pipeline.py)."""
+    """Export as pipeline-compatible TTS segment list (for existing pipeline.py).
+
+    If slot recompute has run (new_start/new_end populated), exports the
+    revised timeline so assembly uses the correct timing.
+    """
     segments = []
     for cue in cues:
+        # Use revised timeline if available, else original
+        start = cue.new_start if cue.new_start is not None else cue.start
+        end = cue.new_end if cue.new_end is not None else cue.end
+
         segments.append({
-            "start": cue.start,
-            "end": cue.end,
+            "start": start,
+            "end": end,
+            "original_start": cue.start,
+            "original_end": cue.end,
             "text": cue.text_clean_en,
             "text_translated": cue.text_hi_fit or cue.text_hi_raw,
             "text_original": cue.text_original,
@@ -68,6 +88,10 @@ def export_tts_segments(cues: List[Cue]) -> List[dict]:
             "_protected_terms": cue.protected_terms,
             "pronunciation_overrides": cue.pronunciation_overrides,
             "qc_flags": cue.qc_flags,
+            # Slot recompute data for assembly
+            "audio_speedup": cue.audio_speedup,
+            "video_speed": cue.video_speed,
+            "slot_status": cue.slot_status,
         })
     return segments
 

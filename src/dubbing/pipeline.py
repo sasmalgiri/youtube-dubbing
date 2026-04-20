@@ -4,7 +4,7 @@ import subprocess
 from typing import List, Tuple
 from .aligner import align_audio_segments
 from .mixer import Mixer
-from ..io.youtube import download_video, fetch_captions
+from ..io_utils.youtube import download_video, fetch_captions
 from ..stt.transcriber import Transcriber
 from ..mt.translator import translate_text
 from ..tts.synthesizer import Synthesizer

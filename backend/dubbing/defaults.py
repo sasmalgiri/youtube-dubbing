@@ -31,6 +31,9 @@ class ProductionDefaults:
     audio_priority: bool = True          # Audio is king, video adapts
 
     # ── Cue Building ──
+    segmenter: str = "dp"                # "dp" (DP optimal) | "sentence" (sentence-first)
+    buffer_pct: float = 0.20             # Hindi expansion buffer for sentence segmenter
+    max_sentences_per_cue: int = 2       # max sentences per cue (sentence segmenter)
     cue_word_target: tuple = (8, 14)
     cue_word_hard_max: int = 16
     cue_dur_target: tuple = (1.2, 4.5)
@@ -47,6 +50,14 @@ class ProductionDefaults:
     # ── QC ──
     qc_block_on_fail: bool = True        # pre-TTS QC blocks, not just logs
     qc_max_retries: int = 3
+
+    # ── AV Sync Slot Recompute ──
+    av_sync_mode: str = "original"       # "original" | "capped" | "audio_first"
+    max_audio_speedup: float = 1.30      # cap for "capped" mode
+    min_video_speed: float = 0.70        # below this → flag for re-segment
+    slot_verify: str = "off"             # "off" | "dry_run" | "auto_fix" | "post_verify"
+    slot_drift_warn_ms: float = 50.0     # warning threshold
+    slot_drift_fail_ms: float = 200.0    # failure threshold
 
 
 # Singleton

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import URLInput from '@/components/URLInput';
 import LanguageSelector, { LANGUAGES } from '@/components/LanguageSelector';
 import SettingsPanel, { type DubbingSettings } from '@/components/SettingsPanel';
+import PresetTabs from '@/components/PresetTabs';
 import JobCard from '@/components/JobCard';
 import SavedLinks from '@/components/SavedLinks';
 import { createJob, createJobUpload, createJobWithSrt, localDownloadAndDub, isRemoteBackend, getJobs, addLink, type JobStatus } from '@/lib/api';
@@ -15,38 +16,97 @@ export default function HomePage() {
     const [sourceLanguage, setSourceLanguage] = useState('auto');
     const [targetLanguage, setTargetLanguage] = useState('hi');
     const [settings, setSettings] = useState<DubbingSettings>({
-        asr_model: 'large-v3-turbo',
-        translation_engine: 'auto',
+        voice: 'hi-IN-MadhurNeural',         // Default: Hindi male voice
+        // ── Stage 1: Download (aria2c 16x) ──
+        asr_model: 'groq-whisper',           // Stage 3: Groq Whisper cloud → fallback local large-v3
+        // ── Stage 5: Translation — Google (parallel x20, FASTEST free) ──
+        translation_engine: 'google',
         tts_rate: '+0%',
         mix_original: false,
+        video_slow_to_match: true,
         original_volume: 0.10,
-        use_cosyvoice: true,
-        use_chatterbox: true,
+        // ── Stage 8: TTS (Managed Quad Parallel) ──
+        use_cosyvoice: false,              // OFF: Edge-TTS only for speed
+        use_chatterbox: false,
         use_indic_parler: false,
+        use_sarvam_bulbul: false,           // OFF: Edge-TTS only for speed
         use_elevenlabs: false,
         use_google_tts: false,
-        use_coqui_xtts: false,
-        use_edge_tts: true,
-        prefer_youtube_subs: false,
-        use_yt_translate: false,
+        use_coqui_xtts: false,              // OFF: Edge-TTS only for speed
+        use_fish_speech: false,
+        use_edge_tts: true,                  // Cloud: fallback overflow
+        prefer_youtube_subs: true,           // ON: skip Whisper if YouTube has subs (huge speed for long videos)
+        use_yt_translate: true,          // ON: try YouTube Hindi auto-translate first
         multi_speaker: false,
         transcribe_only: false,
+        // ── Stage 13: Assembly (split-the-diff: audio 1.35x + video 1.50x) ──
         audio_priority: true,
         audio_untouchable: false,
-        post_tts_level: 'full',
-        audio_bitrate: '320k',
-        encode_preset: 'veryfast',
-        split_duration: 0,
+        // ── Stage 9-11: Silence removal + Enhance + Smooth ──
+        post_tts_level: 'minimal',           // speechnorm + fade (silence removal always runs)
+        audio_quality_mode: 'fast',          // ffmpeg loudnorm (or 'quality' for librosa)
+        enable_sentence_gap: false,          // OFF: no artificial gaps, continuous audio
+        enable_duration_fit: false,          // OFF: assembly split-the-diff handles timing
+        // ── Output quality ──
+        audio_bitrate: '192k',
+        encode_preset: 'fast',               // NVENC GPU encoding
+        download_mode: 'remux',              // 'remux' fast | 'encode' slow but compatible
+        split_duration: 30,                  // 30 min chunks: handles long videos (1h+)
         dub_duration: 0,
         fast_assemble: false,
         dub_chain: [],
-        enable_manual_review: true,
-        use_whisperx: true,
-        simplify_english: true,
+        enable_manual_review: false,
+        use_whisperx: false,
+        simplify_english: false,             // OFF: translation 35% word cap handles it
         step_by_step: false,
         use_new_pipeline: false,
+        enable_tts_verify_retry: false,      // OFF: 70% false-positive rate adds 1-2h on long videos
+        tts_truncation_threshold: 0.30,      // 30% catches catastrophic Edge-TTS drops, no false positives
+        tts_word_match_verify: true,         // ON: per-segment Whisper word verify + retry on mismatch
+        tts_word_match_tolerance: 0.15,      // ±15% wiggle room for word count match
+        tts_word_match_model: 'auto',        // 'auto' picks turbo on GPU, tiny on CPU
+        long_segment_trace: true,            // ON: write long-segment lifecycle JSON report per job
+        long_segment_threshold_words: 15,    // segments with >=15 words are traced
+        tts_no_time_pressure: true,          // ON: TTS gets every word, post-processing handles slots
+        tts_dynamic_workers: true,           // ON: adapt worker count to Edge-TTS rate limits
+        tts_dynamic_min: 10,
+        tts_dynamic_max: 120,
+        tts_dynamic_start: 30,
+        tts_rate_mode: 'auto',       // ON by default: match source video duration
+        tts_rate_ceiling: '+50%',    // 1.5x cap per user preference
+        tts_rate_target_wpm: 130,    // Hindi natural conversational pace
+        keep_subject_english: false,         // OFF: when ON, mask noun subjects so they stay English
+        purge_on_new_url: false,             // OFF: opt-in disk cleanup when submitting a different URL
         pipeline_mode: 'classic',
         _input_mode: 'url',
+        // ── AV Sync Modules ──
+        av_sync_mode: 'original',            // OFF by default — old trim behavior
+        max_audio_speedup: 1.30,
+        min_video_speed: 0.70,
+        slot_verify: 'off',
+        // ── Global Stretch ──
+        use_global_stretch: false,           // OFF by default
+        global_stretch_speedup: 1.25,
+        // ── Segmenter ──
+        segmenter: 'dp',                     // DP optimal by default
+        segmenter_buffer_pct: 0.20,
+        max_sentences_per_cue: 2,
+        yt_transcript_mode: 'yt_timeline',   // Option 1: YT text + YT timeline (fast, no Whisper)
+        yt_segment_mode: 'sentence',         // "sentence" (2 per seg) or "wordcount" (~20 words/seg)
+        yt_text_correction: true,            // correct Whisper text using YouTube subs as reference
+        yt_replace_mode: 'diff',             // "full" (total replace) | "diff" (only fix wrong words)
+        tts_chunk_words: 0,                  // 0=off, 4/8/12=chunk translated text before TTS
+        gap_mode: 'micro',                   // "none" (0s) | "micro" (0.2s) | "full" (original gaps)
+        wc_chunk_size: 8,                    // WordChunk mode: words per TTS chunk (4/8/12)
+        wc_max_stretch: 5.0,                 // WordChunk mode: max video slowdown (1.0-5.0×)
+        wc_transcript: '',                   // WordChunk mode: optional pasted transcript (skips YouTube fetch)
+        sd_srt_content: '',                  // SRT Direct mode: full SRT content (paste or file upload)
+        sd_max_stretch: 10.0,                // SRT Direct mode: max video stretch (1.0-10.0×)
+        sd_audio_speed: 1.25,                // SRT Direct mode: post-TTS audio speedup (atempo)
+        sd_vx_hflip: true,                   // SRT Direct mode: horizontal mirror (Content-ID evasion)
+        sd_vx_hue: 5.0,                      // SRT Direct mode: hue shift degrees
+        sd_vx_zoom: 1.05,                    // SRT Direct mode: zoom + crop back
+        transcript_srt_content: '',          // Upload English SRT to skip transcription entirely
     });
     const [currentUrl, setCurrentUrl] = useState('');
     const [submitting, setSubmitting] = useState(false);
@@ -63,17 +123,41 @@ export default function HomePage() {
 
     const targetName = LANGUAGES.find((l) => l.code === targetLanguage)?.name || targetLanguage;
 
+    // Strip mode-specific bloat from request bodies. A 2 MB pasted SRT
+    // shouldn't ride along with every classic / hybrid / new / oneflow job.
+    const stripModeBloat = useCallback((s: typeof settings) => {
+        const cleaned: any = { ...s };
+        if (cleaned.pipeline_mode !== 'srtdub') delete cleaned.sd_srt_content;
+        if (cleaned.pipeline_mode !== 'wordchunk') delete cleaned.wc_transcript;
+        return cleaned;
+    }, []);
+
+    // Same rule for the saved-link preset — never persist blob fields.
+    const stripForPreset = useCallback((s: typeof settings) => {
+        const { sd_srt_content, wc_transcript, transcript_srt_content, ...rest } = s as any;
+        return { source_language: sourceLanguage, target_language: targetLanguage, ...rest };
+    }, [sourceLanguage, targetLanguage]);
+
     const handleSubmit = useCallback(async (url: string) => {
         setSubmitting(true);
         setError(null);
-        try {
-            // Auto-save URL to saved links with current preset
-            addLink(url, undefined, { source_language: sourceLanguage, target_language: targetLanguage, ...settings }).catch(() => {});
 
+        // Pre-submit guards for mode-specific required inputs
+        if (settings.pipeline_mode === 'srtdub' && !((settings as any).sd_srt_content || '').trim() && !((settings as any).transcript_srt_content || '').trim()) {
+            setError('Paste or upload a translated SRT or an English transcript SRT before starting SRT Direct.');
+            setSubmitting(false);
+            return;
+        }
+
+        try {
+            // Auto-save URL to saved links — WITHOUT blob fields (stripForPreset)
+            addLink(url, undefined, stripForPreset(settings)).catch(() => { });
+
+            const cleanedSettings = stripModeBloat(settings);
             const jobSettings = {
                 source_language: sourceLanguage,
                 target_language: targetLanguage,
-                ...settings,
+                ...cleanedSettings,
             };
 
             // Remote backend (Colab): download locally first, then upload
@@ -87,39 +171,44 @@ export default function HomePage() {
             setError(e instanceof Error ? e.message : 'Failed to start dubbing');
             setSubmitting(false);
         }
-    }, [sourceLanguage, targetLanguage, settings, router]);
+    }, [sourceLanguage, targetLanguage, settings, router, stripModeBloat, stripForPreset]);
 
     const handleFileSubmit = useCallback(async (file: File) => {
         setSubmitting(true);
         setError(null);
+        if (settings.pipeline_mode === 'srtdub' && !((settings as any).sd_srt_content || '').trim() && !((settings as any).transcript_srt_content || '').trim()) {
+            setError('Paste or upload a translated SRT or an English transcript SRT before starting SRT Direct.');
+            setSubmitting(false);
+            return;
+        }
         try {
             const { id } = await createJobUpload(file, {
                 source_language: sourceLanguage,
                 target_language: targetLanguage,
-                ...settings,
+                ...stripModeBloat(settings),
             });
             router.push(`/jobs/${id}`);
         } catch (e) {
             setError(e instanceof Error ? e.message : 'Failed to upload and start dubbing');
             setSubmitting(false);
         }
-    }, [sourceLanguage, targetLanguage, settings, router]);
+    }, [sourceLanguage, targetLanguage, settings, router, stripModeBloat]);
 
     const handleBatchSubmit = useCallback((urls: string[]) => {
-        // Auto-save all batch URLs with current preset
-        const preset = { source_language: sourceLanguage, target_language: targetLanguage, ...settings };
-        urls.forEach(u => addLink(u, undefined, preset).catch(() => {}));
+        // Auto-save all batch URLs with current preset — stripped of blob fields
+        const preset = stripForPreset(settings);
+        urls.forEach(u => addLink(u, undefined, preset).catch(() => { }));
 
         sessionStorage.setItem('batch_pending', JSON.stringify({
             urls,
             settings: {
                 source_language: sourceLanguage,
                 target_language: targetLanguage,
-                ...settings,
+                ...stripModeBloat(settings),
             },
         }));
         router.push('/batch');
-    }, [sourceLanguage, targetLanguage, settings, router]);
+    }, [sourceLanguage, targetLanguage, settings, router, stripModeBloat, stripForPreset]);
 
     const handleSrtSubmit = useCallback(async (srtFile: File, videoSource: { url?: string; file?: File }, needsTranslation?: boolean) => {
         setSubmitting(true);
@@ -183,42 +272,111 @@ export default function HomePage() {
                     />
                 </div>
 
-                {/* Pipeline Switcher — 4 modes (hidden in SRT mode — only Classic applies) */}
+                {/* Preset Tabs — save/load named configurations */}
+                <PresetTabs
+                    currentSettings={settings}
+                    onApply={(loaded) => setSettings(prev => ({ ...prev, ...loaded }))}
+                    onLanguageChange={(src, tgt) => { setSourceLanguage(src); setTargetLanguage(tgt); }}
+                    sourceLanguage={sourceLanguage}
+                    targetLanguage={targetLanguage}
+                />
+
+                {/* Pipeline Switcher — 6 modes (hidden in SRT mode — only Classic applies) */}
                 {settings._input_mode !== 'srt' && (
-                <div className="flex items-center gap-3 px-1">
-                    <div className="flex rounded-xl overflow-hidden border border-border">
-                        {[
-                            { mode: 'classic', label: 'Classic', color: 'bg-primary' },
-                            { mode: 'hybrid', label: 'Hybrid', color: 'bg-amber-500' },
-                            { mode: 'new', label: 'New (DP)', color: 'bg-green-500' },
-                            { mode: 'oneflow', label: 'OneFlow', color: 'bg-red-500' },
-                        ].map(({ mode, label, color }) => (
-                            <button
-                                key={mode}
-                                type="button"
-                                onClick={() => setSettings(s => ({ ...s, pipeline_mode: mode, use_new_pipeline: mode === 'new' }))}
-                                className={`px-4 py-2 text-xs font-medium transition-colors ${
-                                    settings.pipeline_mode === mode || (!(settings.pipeline_mode) && mode === 'classic')
+                    <div className="flex flex-col gap-2 px-1">
+                        <div className="flex flex-wrap gap-1 rounded-xl border border-border p-1">
+                            {[
+                                { mode: 'classic', label: 'Classic', color: 'bg-primary' },
+                                { mode: 'hybrid', label: 'Hybrid', color: 'bg-amber-500' },
+                                { mode: 'new', label: 'New (DP)', color: 'bg-green-500' },
+                                { mode: 'oneflow', label: 'OneFlow', color: 'bg-red-500' },
+                                { mode: 'wordchunk', label: 'WordChunk', color: 'bg-purple-500' },
+                                { mode: 'srtdub', label: 'SRT Direct', color: 'bg-teal-500' },
+                            ].map(({ mode, label, color }) => (
+                                <button
+                                    key={mode}
+                                    type="button"
+                                    onClick={() => setSettings(s => ({ ...s, pipeline_mode: mode, use_new_pipeline: mode === 'new' }))}
+                                    className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${settings.pipeline_mode === mode || (!(settings.pipeline_mode) && mode === 'classic')
                                         ? `${color} text-white`
                                         : 'bg-white/5 text-text-muted hover:bg-white/10'
-                                }`}
-                            >
-                                {label}
-                            </button>
-                        ))}
+                                        }`}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+                        <span className="text-[10px] text-text-muted px-1">
+                            {(({
+                                classic: 'Whisper + merge/split + rule engine (proven)',
+                                hybrid: 'Old shell + new DP core (best of both)',
+                                new: 'Parakeet + WhisperX + DP cues + glossary (experimental)',
+                                oneflow: 'Groq Whisper → Google Translate → Edge-TTS → 1.15x (FASTEST)',
+                                wordchunk: 'YouTube English subs → sentence split → Google Translate → TTS → super-stretch video (1-5×)',
+                                srtdub: 'Your Hindi SRT → TTS each cue verbatim → 0-gap concat → stretch 1-10× + freeze-pad (audio never trimmed)',
+                            }) as Record<string, string>)[settings.pipeline_mode || 'classic']}
+                        </span>
                     </div>
-                    <span className="text-[10px] text-text-muted">
-                        {(({ classic: 'Whisper + merge/split + rule engine (proven)',
-                           hybrid: 'Old shell + new DP core (best of both)',
-                           new: 'Parakeet + WhisperX + DP cues + glossary (experimental)',
-                           oneflow: 'Groq Whisper → Google Translate → Edge-TTS → 1.15x (FASTEST)',
-                        }) as Record<string, string>)[settings.pipeline_mode || 'classic']}
-                    </span>
-                </div>
                 )}
 
+                {/* Voice Clone Preset */}
+                <div className="flex items-center gap-3 px-1">
+                    <button
+                        type="button"
+                        onClick={() => {
+                            const isVoiceClone = settings.audio_untouchable && settings.use_coqui_xtts && !settings.use_edge_tts;
+                            if (isVoiceClone) {
+                                // Cancel voice clone — restore defaults
+                                setSourceLanguage('auto');
+                                setSettings(s => ({
+                                    ...s,
+                                    use_cosyvoice: false,
+                                    use_coqui_xtts: false,
+                                    use_edge_tts: true,
+                                    use_sarvam_bulbul: false,
+                                    use_chatterbox: false,
+                                    audio_untouchable: false,
+                                    post_tts_level: 'minimal',
+                                    audio_priority: true,
+                                    video_slow_to_match: true,
+                                    tts_rate: '+0%',
+                                }));
+                            } else {
+                                // Activate voice clone
+                                setSourceLanguage(targetLanguage === 'hi' ? 'hi' : targetLanguage);
+                                setSettings(s => ({
+                                    ...s,
+                                    use_cosyvoice: false,
+                                    use_coqui_xtts: true,
+                                    use_edge_tts: false,
+                                    use_sarvam_bulbul: false,
+                                    use_chatterbox: false,
+                                    audio_untouchable: true,
+                                    post_tts_level: 'none',
+                                    audio_priority: true,
+                                    video_slow_to_match: true,
+                                    tts_rate: '+0%',
+                                    simplify_english: false,
+                                    enable_manual_review: false,
+                                }));
+                            }
+                        }}
+                        className={`px-4 py-2 rounded-xl text-xs font-medium transition-all border ${settings.audio_untouchable && settings.use_coqui_xtts && !settings.use_edge_tts
+                            ? 'bg-violet-500/20 border-violet-500 text-violet-300'
+                            : 'bg-white/5 border-white/10 text-text-muted hover:bg-violet-500/10 hover:border-violet-500/30'
+                            }`}
+                    >
+                        Voice Clone
+                    </button>
+                    {settings.audio_untouchable && settings.use_coqui_xtts && !settings.use_edge_tts && (
+                        <span className="text-[10px] text-violet-400">
+                            Same-language re-voice: XTTS clones original speaker, zero post-processing
+                        </span>
+                    )}
+                </div>
+
                 {/* Advanced Settings */}
-                <SettingsPanel settings={settings} onChange={setSettings} />
+                <SettingsPanel settings={settings} onChange={setSettings} targetLanguage={targetLanguage} />
 
                 {/* Recent Jobs */}
                 {recentJobs.length > 0 && (

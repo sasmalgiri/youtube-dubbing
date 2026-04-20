@@ -19,6 +19,15 @@ interface ProgressPipelineProps {
     isComplete: boolean;
     isError: boolean;
     eta?: string;
+    stepTimes?: Record<string, number>;
+}
+
+function formatStepTime(seconds: number): string {
+    if (!seconds || seconds < 0) return '';
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    const m = Math.floor(seconds / 60);
+    const s = Math.round(seconds % 60);
+    return s > 0 ? `${m}m ${s}s` : `${m}m`;
 }
 
 function StepIcon({ icon, size = 16 }: { icon: string; size?: number }) {
@@ -42,16 +51,17 @@ function StepIcon({ icon, size = 16 }: { icon: string; size?: number }) {
     }
 }
 
-export default function ProgressPipeline({ currentStep, stepProgress, overallProgress, message, isComplete, isError, eta }: ProgressPipelineProps) {
+export default function ProgressPipeline({ currentStep, stepProgress, overallProgress, message, isComplete, isError, eta, stepTimes }: ProgressPipelineProps) {
     const currentIndex = STEPS.findIndex(s => s.key === currentStep);
+    const currentStepLabel = STEPS[currentIndex]?.label || currentStep;
 
     return (
         <div className="glass-card p-6">
             {/* Overall progress bar */}
-            <div className="mb-6">
+            <div className="mb-4">
                 <div className="flex items-center justify-between mb-2">
                     <span className="text-sm font-medium text-text-primary">
-                        {isComplete ? 'Dubbing Complete!' : isError ? 'Error Occurred' : 'Dubbing in Progress...'}
+                        {isComplete ? 'Dubbing Complete!' : isError ? 'Error Occurred' : 'Overall Progress'}
                     </span>
                     <div className="flex items-center gap-3">
                         {eta && !isComplete && !isError && (
@@ -72,6 +82,26 @@ export default function ProgressPipeline({ currentStep, stepProgress, overallPro
                     />
                 </div>
             </div>
+
+            {/* Current step progress bar — each step has its own 0-100% */}
+            {!isComplete && !isError && currentIndex >= 0 && (
+                <div className="mb-6">
+                    <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-medium text-primary-light">
+                            Current Step: {currentStepLabel}
+                        </span>
+                        <span className="text-xs text-primary-light font-mono">
+                            {Math.round(stepProgress * 100)}%
+                        </span>
+                    </div>
+                    <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                        <div
+                            className="h-full bg-primary rounded-full transition-all duration-500 ease-out"
+                            style={{ width: `${stepProgress * 100}%` }}
+                        />
+                    </div>
+                </div>
+            )}
 
             {/* Steps */}
             <div className="flex items-center justify-between">
@@ -115,6 +145,27 @@ export default function ProgressPipeline({ currentStep, stepProgress, overallPro
                                 )}>
                                     {step.label}
                                 </span>
+
+                                {/* Per-step numeric % — done steps always 100%, active step shows live %, pending steps show 0% */}
+                                <span className={cn(
+                                    'text-[9px] mt-0.5 font-mono',
+                                    isDone && 'text-success/80',
+                                    isActive && 'text-primary-light',
+                                    isPending && 'text-text-muted/40',
+                                    hasError && 'text-error/80',
+                                )}>
+                                    {isDone ? '100%' : isActive ? `${Math.round(stepProgress * 100)}%` : '0%'}
+                                </span>
+
+                                {/* Step time */}
+                                {stepTimes?.[step.key] != null && (isDone || isActive) && (
+                                    <span className={cn(
+                                        'text-[9px] mt-0.5',
+                                        isDone ? 'text-success/70' : 'text-primary-light/70',
+                                    )}>
+                                        {formatStepTime(stepTimes[step.key])}
+                                    </span>
+                                )}
 
                                 {/* Step progress bar */}
                                 {isActive && (

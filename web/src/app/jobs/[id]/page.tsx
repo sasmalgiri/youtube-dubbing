@@ -143,45 +143,108 @@ export default function JobPage() {
                     isComplete={isComplete}
                     isError={isError}
                     eta={eta}
+                    stepTimes={status?.step_times}
                 />
 
                 {/* Resource pills */}
                 {status?.config && Object.keys(status.config).length > 0 && (
-                    <div className="flex flex-wrap gap-2">
-                        {status.config.asr_model && (
-                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /></svg>
-                                {status.config.asr_model}
-                            </span>
-                        )}
-                        {status.config.translation_engine && (
-                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-purple-500/10 text-purple-400 border border-purple-500/20">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m5 8 6 6" /><path d="m4 14 6-6 2-3" /><path d="M2 5h12" /><path d="M7 2h1" /></svg>
-                                {status.config.translation_engine}
-                            </span>
-                        )}
-                        {status.config.tts_engine && (
-                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 10v3" /><path d="M6 6v11" /><path d="M10 3v18" /><path d="M14 8v7" /><path d="M18 5v13" /><path d="M22 10v3" /></svg>
-                                {status.config.tts_engine}
-                            </span>
-                        )}
-                        {status.config.audio_priority && (
-                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>
-                                Audio Priority
-                            </span>
-                        )}
-                        {status.config.audio_bitrate && (
-                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
-                                {status.config.audio_bitrate}
-                            </span>
-                        )}
-                        {status.config.encode_preset && status.config.encode_preset !== 'veryfast' && (
-                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20">
-                                {status.config.encode_preset}
-                            </span>
-                        )}
+                    <div className="space-y-3">
+                        {(() => {
+                            const c = status.config;
+                            const ON = 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+                            const OFF = 'bg-zinc-500/10 text-zinc-500 border border-zinc-500/20 opacity-60';
+                            const VAL = 'bg-blue-500/10 text-blue-400 border border-blue-500/20';
+                            const pillCls = 'inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-medium';
+                            const B = (label: string, cls: string) => (
+                                <span key={label} className={`${pillCls} ${cls}`}>{label}</span>
+                            );
+                            const BoolPill = (label: string, val: boolean | undefined) =>
+                                B(`${label}: ${val ? 'ON' : 'OFF'}`, val ? ON : OFF);
+
+                            return (
+                                <>
+                                    {/* Core Settings */}
+                                    <div>
+                                        <p className="text-[10px] uppercase tracking-wider text-text-muted mb-1.5 font-semibold">Core</p>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {c.asr_model && B(c.asr_model, 'bg-blue-500/10 text-blue-400 border border-blue-500/20')}
+                                            {c.translation_engine && B(c.translation_engine, 'bg-purple-500/10 text-purple-400 border border-purple-500/20')}
+                                            {c.tts_engine && B(c.tts_engine, 'bg-green-500/10 text-green-400 border border-green-500/20')}
+                                            {c.source_language && B(`Source: ${c.source_language}`, VAL)}
+                                            {c.target_language && B(`Target: ${c.target_language}`, VAL)}
+                                            {c.voice && B(`Voice: ${c.voice}`, VAL)}
+                                            {c.preset_name && B(`Preset: ${c.preset_name}`, 'bg-violet-500/10 text-violet-400 border border-violet-500/20')}
+                                            {c.pipeline_mode && B(`Pipeline: ${c.pipeline_mode}`, VAL)}
+                                        </div>
+                                    </div>
+
+                                    {/* Audio & Encoding */}
+                                    <div>
+                                        <p className="text-[10px] uppercase tracking-wider text-text-muted mb-1.5 font-semibold">Audio & Encoding</p>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {c.tts_rate && B(`Rate: ${c.tts_rate}`, 'bg-teal-500/10 text-teal-400 border border-teal-500/20')}
+                                            {c.audio_bitrate && B(`Bitrate: ${c.audio_bitrate}`, 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20')}
+                                            {c.encode_preset && B(`Encode: ${c.encode_preset}`, 'bg-rose-500/10 text-rose-400 border border-rose-500/20')}
+                                            {c.post_tts_level && B(`Post-TTS: ${c.post_tts_level}`, 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20')}
+                                            {c.audio_quality_mode && B(`Quality: ${c.audio_quality_mode}`, VAL)}
+                                            {c.download_mode && B(`Download: ${c.download_mode}`, VAL)}
+                                            {c.original_volume != null && B(`BG Vol: ${c.original_volume}`, VAL)}
+                                            {c.split_duration != null && B(`Split: ${c.split_duration}s`, VAL)}
+                                            {c.dub_duration != null && c.dub_duration > 0 && B(`Dub Limit: ${c.dub_duration >= 60 ? `${Math.floor(c.dub_duration / 60)}h${c.dub_duration % 60 ? ` ${c.dub_duration % 60}m` : ''}` : `${c.dub_duration}m`}`, VAL)}
+                                        </div>
+                                    </div>
+
+                                    {/* Boolean Toggles */}
+                                    <div>
+                                        <p className="text-[10px] uppercase tracking-wider text-text-muted mb-1.5 font-semibold">Options</p>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {BoolPill('Audio Priority', c.audio_priority)}
+                                            {BoolPill('Untouchable', c.audio_untouchable)}
+                                            {BoolPill('Video Sync', c.video_slow_to_match)}
+                                            {BoolPill('Mix BG Music', c.mix_original)}
+                                            {BoolPill('Multi-Speaker', c.multi_speaker)}
+                                            {BoolPill('Fast Assemble', c.fast_assemble)}
+                                            {BoolPill('Sentence Gap', c.enable_sentence_gap)}
+                                            {BoolPill('Duration Fit', c.enable_duration_fit)}
+                                            {BoolPill('YT Subs', c.prefer_youtube_subs)}
+                                            {BoolPill('YT Translate', c.use_yt_translate)}
+                                            {BoolPill('WhisperX', c.use_whisperx)}
+                                            {BoolPill('Simplify EN', c.simplify_english)}
+                                            {BoolPill('Manual Review', c.enable_manual_review)}
+                                            {BoolPill('Transcribe Only', c.transcribe_only)}
+                                            {BoolPill('Sarvam Bulbul', c.use_sarvam_bulbul)}
+                                            {BoolPill('TTS Verify Retry', c.enable_tts_verify_retry)}
+                                            {BoolPill('Keep Subj EN', c.keep_subject_english)}
+                                            {BoolPill('Word Match', c.tts_word_match_verify)}
+                                            {BoolPill('Seg Trace', c.long_segment_trace)}
+                                            {BoolPill('No Time Pressure', c.tts_no_time_pressure)}
+                                            {BoolPill('Dynamic Workers', c.tts_dynamic_workers)}
+                                            {BoolPill('Purge on URL', c.purge_on_new_url)}
+                                            {BoolPill('Step-by-Step', c.step_by_step)}
+                                            {BoolPill('New Pipeline', c.use_new_pipeline)}
+                                            {BoolPill('SRT Translate', c.srt_needs_translation)}
+                                            {c.av_sync_mode && c.av_sync_mode !== 'original' && B(`AV Sync: ${c.av_sync_mode}`, 'bg-orange-500/10 text-orange-400 border border-orange-500/20')}
+                                            {c.use_global_stretch && B('Global Stretch', 'bg-orange-500/10 text-orange-400 border border-orange-500/20')}
+                                            {c.segmenter && c.segmenter !== 'dp' && B(`Segmenter: ${c.segmenter}`, 'bg-orange-500/10 text-orange-400 border border-orange-500/20')}
+                                            {/* Detect Voice Clone mode */}
+                                            {c.audio_untouchable && c.post_tts_level === 'none' && B('Voice Clone', 'bg-violet-500/10 text-violet-400 border border-violet-500/20')}
+                                        </div>
+                                    </div>
+
+                                    {/* Thresholds */}
+                                    <div>
+                                        <p className="text-[10px] uppercase tracking-wider text-text-muted mb-1.5 font-semibold">Thresholds</p>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {c.tts_truncation_threshold != null && B(`Truncation: ${c.tts_truncation_threshold}`, VAL)}
+                                            {c.tts_word_match_tolerance != null && B(`Match Tol: ${c.tts_word_match_tolerance}`, VAL)}
+                                            {c.tts_word_match_model && B(`Match Model: ${c.tts_word_match_model}`, VAL)}
+                                            {c.long_segment_threshold_words != null && B(`Long Seg: ${c.long_segment_threshold_words}w`, VAL)}
+                                            {c.tts_dynamic_min != null && B(`Workers: ${c.tts_dynamic_min}-${c.tts_dynamic_max ?? '?'} (start ${c.tts_dynamic_start ?? '?'})`, VAL)}
+                                        </div>
+                                    </div>
+                                </>
+                            );
+                        })()}
                     </div>
                 )}
 
@@ -193,8 +256,8 @@ export default function JobPage() {
                                 <div className={`
                                     w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold
                                     ${status.qa_score >= 0.7 ? 'bg-green-500/20 text-green-400' :
-                                      status.qa_score >= 0.4 ? 'bg-amber-500/20 text-amber-400' :
-                                      'bg-red-500/20 text-red-400'}
+                                        status.qa_score >= 0.4 ? 'bg-amber-500/20 text-amber-400' :
+                                            'bg-red-500/20 text-red-400'}
                                 `}>
                                     {Math.round(status.qa_score * 100)}%
                                 </div>
@@ -204,8 +267,8 @@ export default function JobPage() {
                                     </p>
                                     <p className="text-xs text-text-muted">
                                         {status.qa_score >= 0.7 ? 'Good match with reference subtitles' :
-                                         status.qa_score >= 0.4 ? 'Partial match — some segments may differ' :
-                                         'Low match — auto-corrected using reference subs'}
+                                            status.qa_score >= 0.4 ? 'Partial match — some segments may differ' :
+                                                'Low match — auto-corrected using reference subs'}
                                     </p>
                                 </div>
                             </div>
@@ -218,7 +281,7 @@ export default function JobPage() {
                                                 const data = await res.json();
                                                 setQaReport(data.report);
                                             }
-                                        } catch {}
+                                        } catch { }
                                     }
                                     setQaOpen(!qaOpen);
                                 }}
@@ -231,6 +294,61 @@ export default function JobPage() {
                             <pre className="mt-3 p-3 rounded-lg bg-black/30 text-xs text-text-secondary overflow-x-auto max-h-80 overflow-y-auto whitespace-pre-wrap font-mono">
                                 {qaReport}
                             </pre>
+                        )}
+                    </div>
+                )}
+
+                {/* Word Count Card — populated by _pretts_word_budget after TTS finishes */}
+                {status && (status.total_words ?? 0) > 0 && (
+                    <div className="glass-card p-4">
+                        <div className="flex items-center gap-3 mb-3">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-primary-light">
+                                <path d="M17 6.1H3" />
+                                <path d="M21 12.1H3" />
+                                <path d="M15.1 18H3" />
+                            </svg>
+                            <p className="text-sm font-medium text-text-primary">Word Count</p>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                            <div>
+                                <p className="text-2xl font-bold text-primary-light tabular-nums">
+                                    {(status.total_words ?? 0).toLocaleString()}
+                                </p>
+                                <p className="text-[10px] text-text-muted uppercase tracking-wide mt-0.5">
+                                    Total Words
+                                </p>
+                            </div>
+                            <div>
+                                <p className="text-2xl font-bold text-text-primary tabular-nums">
+                                    {(status.total_sentences ?? 0).toLocaleString()}
+                                </p>
+                                <p className="text-[10px] text-text-muted uppercase tracking-wide mt-0.5">
+                                    Sentences
+                                </p>
+                            </div>
+                            <div>
+                                <p className="text-2xl font-bold text-text-primary tabular-nums">
+                                    {(status.avg_words_per_sent ?? 0).toFixed(1)}
+                                </p>
+                                <p className="text-[10px] text-text-muted uppercase tracking-wide mt-0.5">
+                                    Avg / Sentence
+                                </p>
+                            </div>
+                            <div>
+                                <p className="text-2xl font-bold text-text-primary tabular-nums">
+                                    {status.max_sent_words ?? 0}
+                                </p>
+                                <p className="text-[10px] text-text-muted uppercase tracking-wide mt-0.5">
+                                    Longest Sentence
+                                </p>
+                            </div>
+                        </div>
+                        {(status.max_seg_words ?? 0) > 0 && (
+                            <p className="text-[10px] text-text-muted mt-3">
+                                Largest segment: <span className="font-mono text-text-secondary">{status.max_seg_words} words</span>
+                                {' · '}
+                                Counted before TTS so the truncation guard knows what to expect.
+                            </p>
                         )}
                     </div>
                 )}

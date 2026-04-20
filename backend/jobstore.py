@@ -125,7 +125,8 @@ class JobStore:
                     effective_state = "error"
                 data["state"] = effective_state
                 # Jobs that were 'running' when the server died → mark as error
-                if effective_state == "running":
+                was_running = (effective_state == "running")
+                if was_running:
                     data["state"] = "error"
                     data["message"] = "Server restarted while job was running"
                     data["error"] = "Server restarted"
@@ -136,6 +137,10 @@ class JobStore:
                     data["segments"] = []
                 job = _dict_to_job(data)
                 jobs_dict[job_id] = job
+                # Persist the running→error conversion back to disk so the
+                # ghost doesn't reappear on every restart.
+                if was_running:
+                    self.save(job)
                 loaded += 1
             except Exception as e:
                 print(f"[JobStore] Failed to load job {job_id}: {e}", flush=True)

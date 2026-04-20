@@ -260,10 +260,8 @@ def _build_metrics():
         logger.info("SupabaseMetrics initialised (url=%s…)", url[:40])
         return instance
     except ImportError:
-        logger.warning(
-            "supabase-py not installed — metrics disabled. "
-            "Install with: pip install supabase"
-        )
+        # Supabase metrics are optional. Silent fall-through to NoOpMetrics
+        # so we don't spam the log on every import.
         return NoOpMetrics()
     except Exception:
         logger.exception("SupabaseMetrics init failed — falling back to NoOpMetrics.")

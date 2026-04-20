@@ -371,21 +371,34 @@ def _translate_google_parallel(segments: List[Dict], target_lang: str,
     done = [0]
     lock = __import__("threading").Lock()
 
+    def _is_garbage(text):
+        if not text:
+            return True
+        low = text.lower()
+        return ("error 500" in low or "server error" in low
+                or "that's an error" in low or "<html" in low
+                or "<!doctype" in low)
+
     def _translate_one(seg):
         text = seg.get("text", "").strip()
         if not text:
             return
-        try:
-            translator = GoogleTranslator(source='auto', target=target_lang)
-            result = translator.translate(text)
-            if result:
-                seg["text_translated"] = result
-                mgr.report_success("google")
-            else:
+        for _attempt in range(3):
+            try:
+                translator = GoogleTranslator(source='auto', target=target_lang)
+                result = translator.translate(text)
+                if result and not _is_garbage(result):
+                    seg["text_translated"] = result
+                    mgr.report_success("google")
+                    return
+                # Garbage response — retry
                 mgr.report_failure("google")
-        except Exception:
-            mgr.report_failure("google")
-            seg.setdefault("text_translated", text)
+                import time; time.sleep(1.5 * (_attempt + 1))
+            except Exception:
+                mgr.report_failure("google")
+                import time; time.sleep(1.5 * (_attempt + 1))
+        # All retries failed — keep original
+        seg.setdefault("text_translated", text)
 
         with lock:
             done[0] += 1

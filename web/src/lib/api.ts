@@ -30,9 +30,12 @@ export interface JobCreateRequest {
     use_cosyvoice?: boolean;
     use_chatterbox?: boolean;
     use_indic_parler?: boolean;
+    use_sarvam_bulbul?: boolean;
+    video_slow_to_match?: boolean;
     use_elevenlabs?: boolean;
     use_google_tts?: boolean;
     use_coqui_xtts?: boolean;
+    use_fish_speech?: boolean;
     use_edge_tts?: boolean;
     prefer_youtube_subs?: boolean;
     use_yt_translate?: boolean;
@@ -41,8 +44,12 @@ export interface JobCreateRequest {
     audio_priority?: boolean;
     audio_untouchable?: boolean;
     post_tts_level?: string;
+    audio_quality_mode?: string;
+    enable_sentence_gap?: boolean;
+    enable_duration_fit?: boolean;
     audio_bitrate?: string;
     encode_preset?: string;
+    download_mode?: string;
     split_duration?: number;
     dub_duration?: number;
     fast_assemble?: boolean;
@@ -52,19 +59,126 @@ export interface JobCreateRequest {
     simplify_english?: boolean;
     step_by_step?: boolean;
     use_new_pipeline?: boolean;
+    enable_tts_verify_retry?: boolean;
+    tts_truncation_threshold?: number;
+    tts_word_match_verify?: boolean;
+    tts_word_match_tolerance?: number;
+    tts_word_match_model?: string;
+    long_segment_trace?: boolean;
+    long_segment_threshold_words?: number;
+    tts_no_time_pressure?: boolean;
+    tts_dynamic_workers?: boolean;
+    tts_dynamic_min?: number;
+    tts_dynamic_max?: number;
+    tts_dynamic_start?: number;
+    tts_rate_mode?: string;
+    tts_rate_ceiling?: string;
+    tts_rate_target_wpm?: number;
+    keep_subject_english?: boolean;
+    purge_on_new_url?: boolean;
     pipeline_mode?: string;
     srt_needs_translation?: boolean;
+    // ── AV Sync Modules ──
+    av_sync_mode?: string;
+    max_audio_speedup?: number;
+    min_video_speed?: number;
+    slot_verify?: string;
+    use_global_stretch?: boolean;
+    global_stretch_speedup?: number;
+    segmenter?: string;
+    segmenter_buffer_pct?: number;
+    max_sentences_per_cue?: number;
+    yt_transcript_mode?: string;
+    yt_segment_mode?: string;
+    yt_text_correction?: boolean;
+    yt_replace_mode?: string;
+    tts_chunk_words?: number;
+    gap_mode?: string;
+    // ── WordChunk mode ──
+    wc_chunk_size?: number;          // 4 | 8 | 12
+    wc_max_stretch?: number;         // 1.0 – 5.0
+    wc_transcript?: string;          // optional pasted transcript override
+    // ── SRT Direct mode ──
+    sd_srt_content?: string;         // full SRT content (required for srtdub mode)
+    sd_max_stretch?: number;         // 1.0 – 10.0
+    sd_audio_speed?: number;         // post-TTS atempo (0.5-3.0, default 1.25)
+    sd_vx_hflip?: boolean;           // horizontal mirror
+    sd_vx_hue?: number;              // hue shift degrees (-30..+30)
+    sd_vx_zoom?: number;             // zoom + crop back (1.0 = off, 1.05 = 5% zoom)
 }
 
 export interface JobConfig {
+    // Core labels
     asr_model?: string;
     translation_engine?: string;
     tts_engine?: string;
-    audio_priority?: boolean;
-    audio_untouchable?: boolean;
-    post_tts_level?: string;
+    tts_rate?: string;
     audio_bitrate?: string;
     encode_preset?: string;
+    post_tts_level?: string;
+    audio_quality_mode?: string;
+    download_mode?: string;
+    split_duration?: number;
+    dub_duration?: number;
+    pipeline_mode?: string;
+    source_language?: string;
+    target_language?: string;
+    voice?: string;
+    original_volume?: number;
+    // Boolean toggles
+    audio_priority?: boolean;
+    audio_untouchable?: boolean;
+    video_slow_to_match?: boolean;
+    mix_original?: boolean;
+    multi_speaker?: boolean;
+    fast_assemble?: boolean;
+    enable_sentence_gap?: boolean;
+    enable_duration_fit?: boolean;
+    prefer_youtube_subs?: boolean;
+    use_yt_translate?: boolean;
+    use_whisperx?: boolean;
+    simplify_english?: boolean;
+    enable_manual_review?: boolean;
+    transcribe_only?: boolean;
+    use_sarvam_bulbul?: boolean;
+    enable_tts_verify_retry?: boolean;
+    keep_subject_english?: boolean;
+    tts_word_match_verify?: boolean;
+    long_segment_trace?: boolean;
+    tts_no_time_pressure?: boolean;
+    tts_dynamic_workers?: boolean;
+    purge_on_new_url?: boolean;
+    step_by_step?: boolean;
+    use_new_pipeline?: boolean;
+    srt_needs_translation?: boolean;
+    // Numeric thresholds
+    tts_truncation_threshold?: number;
+    tts_word_match_tolerance?: number;
+    tts_word_match_model?: string;
+    long_segment_threshold_words?: number;
+    tts_dynamic_min?: number;
+    tts_dynamic_max?: number;
+    tts_dynamic_start?: number;
+    tts_rate_mode?: string;
+    tts_rate_ceiling?: string;
+    tts_rate_target_wpm?: number;
+    // ── Preset + AV-sync + segmenter (read by the job details page) ──
+    preset_name?: string;
+    av_sync_mode?: string;
+    max_audio_speedup?: number;
+    min_video_speed?: number;
+    slot_verify?: string;
+    use_global_stretch?: boolean;
+    global_stretch_speedup?: number;
+    segmenter?: string;
+    segmenter_buffer_pct?: number;
+    max_sentences_per_cue?: number;
+    yt_transcript_mode?: string;
+    yt_segment_mode?: string;
+    yt_text_correction?: boolean;
+    yt_replace_mode?: string;
+    tts_chunk_words?: number;
+    gap_mode?: string;
 }
 
 export interface JobStatus {
@@ -73,6 +187,7 @@ export interface JobStatus {
     current_step: string;
     step_progress: number;
     overall_progress: number;
+    step_times?: Record<string, number>;
     message: string;
     error?: string | null;
     source_url: string;
@@ -86,6 +201,12 @@ export interface JobStatus {
     qa_score?: number | null;
     chain_languages?: string[];
     chain_parent_id?: string | null;
+    // TTS budget metrics — populated after _pretts_word_budget runs
+    total_words?: number;
+    total_sentences?: number;
+    avg_words_per_sent?: number;
+    max_seg_words?: number;
+    max_sent_words?: number;
 }
 
 export interface TranscriptSegment {
@@ -300,9 +421,12 @@ export interface LinkPreset {
     use_cosyvoice?: boolean;
     use_chatterbox?: boolean;
     use_indic_parler?: boolean;
+    use_sarvam_bulbul?: boolean;
+    video_slow_to_match?: boolean;
     use_elevenlabs?: boolean;
     use_google_tts?: boolean;
     use_coqui_xtts?: boolean;
+    use_fish_speech?: boolean;
     use_edge_tts?: boolean;
     prefer_youtube_subs?: boolean;
     use_yt_translate?: boolean;
@@ -311,8 +435,12 @@ export interface LinkPreset {
     audio_priority?: boolean;
     audio_untouchable?: boolean;
     post_tts_level?: string;
+    audio_quality_mode?: string;
+    enable_sentence_gap?: boolean;
+    enable_duration_fit?: boolean;
     audio_bitrate?: string;
     encode_preset?: string;
+    download_mode?: string;
     split_duration?: number;
     dub_duration?: number;
     fast_assemble?: boolean;
@@ -322,8 +450,41 @@ export interface LinkPreset {
     simplify_english?: boolean;
     step_by_step?: boolean;
     use_new_pipeline?: boolean;
+    enable_tts_verify_retry?: boolean;
+    tts_truncation_threshold?: number;
+    tts_word_match_verify?: boolean;
+    tts_word_match_tolerance?: number;
+    tts_word_match_model?: string;
+    long_segment_trace?: boolean;
+    long_segment_threshold_words?: number;
+    tts_no_time_pressure?: boolean;
+    tts_dynamic_workers?: boolean;
+    tts_dynamic_min?: number;
+    tts_dynamic_max?: number;
+    tts_dynamic_start?: number;
+    tts_rate_mode?: string;
+    tts_rate_ceiling?: string;
+    tts_rate_target_wpm?: number;
+    keep_subject_english?: boolean;
+    purge_on_new_url?: boolean;
     pipeline_mode?: string;
     srt_needs_translation?: boolean;
+    // ── AV Sync + Segmenter + YouTube ──
+    av_sync_mode?: string;
+    max_audio_speedup?: number;
+    min_video_speed?: number;
+    slot_verify?: string;
+    use_global_stretch?: boolean;
+    global_stretch_speedup?: number;
+    segmenter?: string;
+    segmenter_buffer_pct?: number;
+    max_sentences_per_cue?: number;
+    yt_transcript_mode?: string;
+    yt_segment_mode?: string;
+    yt_text_correction?: boolean;
+    yt_replace_mode?: string;
+    tts_chunk_words?: number;
+    gap_mode?: string;
 }
 
 export interface SavedLink {
@@ -371,6 +532,51 @@ export async function deleteLink(id: string): Promise<SavedLink[]> {
     if (!res.ok) return [];
     const data = await res.json();
     return data.links || [];
+}
+
+// ── Presets (named pipeline configurations) ─────────────────────────────────
+
+export interface Preset {
+    name: string;
+    slug: string;
+    settings?: Record<string, unknown>;
+}
+
+export async function getPresets(): Promise<Preset[]> {
+    const res = await fetch(`${API_BASE}/api/presets`, { headers: { ...EXTRA_HEADERS } });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.presets || [];
+}
+
+export async function getPreset(slug: string): Promise<Preset | null> {
+    const res = await fetch(`${API_BASE}/api/presets/${slug}`, { headers: { ...EXTRA_HEADERS } });
+    if (!res.ok) return null;
+    return res.json();
+}
+
+export async function savePreset(name: string, settings: Record<string, unknown>): Promise<Preset> {
+    const res = await fetch(`${API_BASE}/api/presets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...EXTRA_HEADERS },
+        body: JSON.stringify({ name, settings }),
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Failed to save preset' }));
+        throw new Error(err.error || 'Failed to save preset');
+    }
+    return res.json();
+}
+
+export async function deletePreset(slug: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/api/presets/${slug}`, {
+        method: 'DELETE',
+        headers: { ...EXTRA_HEADERS },
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Failed to delete preset' }));
+        throw new Error(err.error || 'Failed to delete preset');
+    }
 }
 
 // ── Local Download + Upload (for remote backend) ────────────────────────────
@@ -460,4 +666,31 @@ export function subscribeToJobEvents(
         stopped = true;
         controller.abort();
     };
+}
+
+// ── Translation Glossary ─────────────────────────────────────────────────────
+
+export async function getGlossary(): Promise<Record<string, string>> {
+    const res = await fetch(`${API_BASE}/api/glossary`, { headers: EXTRA_HEADERS });
+    if (!res.ok) return {};
+    return res.json();
+}
+
+export async function addGlossaryEntry(english: string, hindi: string): Promise<Record<string, string>> {
+    const res = await fetch(`${API_BASE}/api/glossary`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...EXTRA_HEADERS },
+        body: JSON.stringify({ english, hindi }),
+    });
+    const data = await res.json();
+    return data.glossary || {};
+}
+
+export async function deleteGlossaryEntry(word: string): Promise<Record<string, string>> {
+    const res = await fetch(`${API_BASE}/api/glossary/${encodeURIComponent(word)}`, {
+        method: 'DELETE',
+        headers: EXTRA_HEADERS,
+    });
+    const data = await res.json();
+    return data.glossary || {};
 }

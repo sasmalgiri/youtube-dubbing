@@ -44,6 +44,27 @@ if %errorlevel% neq 0 (
 set PYTHONIOENCODING=utf-8
 chcp 65001 >nul 2>&1
 
+:: ── Free ports 8000 (backend) and 3000 (frontend) before launching ──
+:: Kills any process still squatting on these ports from a previous run.
+:: This is what made every "second launch" fail with Errno 10048.
+echo  Freeing port 8000 (backend) ...
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8000 " ^| findstr "LISTENING"') do (
+    echo    killing PID %%P on port 8000
+    taskkill /F /PID %%P >nul 2>&1
+)
+echo  Freeing port 3000 (frontend) ...
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":3000 " ^| findstr "LISTENING"') do (
+    echo    killing PID %%P on port 3000
+    taskkill /F /PID %%P >nul 2>&1
+)
+echo  Freeing port 8100 (trainer) ...
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8100 " ^| findstr "LISTENING"') do (
+    echo    killing PID %%P on port 8100
+    taskkill /F /PID %%P >nul 2>&1
+)
+:: Give Windows a moment to release the sockets
+timeout /t 2 /nobreak >nul
+
 :: Start Hinglish AI Trainer (if project exists)
 set HINGLISH_DIR=%~dp0..\hinglish-ai-model
 if exist "%HINGLISH_DIR%\app.py" (
@@ -58,7 +79,7 @@ if exist "%HINGLISH_DIR%\app.py" (
 echo.
 echo  Starting backend server on http://localhost:8000 ...
 cd /d "%~dp0backend"
-start "VoiceDub Backend" /min cmd /k "%PYTHON% -m uvicorn app:app --host 0.0.0.0 --port 8000"
+start "VoiceDub Backend" /min cmd /k "%PYTHON% app.py"
 
 :: Wait for backend to be ready
 timeout /t 3 /nobreak >nul

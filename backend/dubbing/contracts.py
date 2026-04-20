@@ -61,11 +61,28 @@ class Cue:
     pronunciation_overrides: dict[str, str] = field(default_factory=dict)
     qc_flags: list[str] = field(default_factory=list)
     emotion: str = "neutral"  # neutral | punchy | emotional | comedic
+    _translation_hints: dict = field(default_factory=dict)  # populated by runner.translate()
+
+    # ── Slot recompute (populated by slot_recompute.py) ──
+    tts_duration: Optional[float] = None      # actual TTS wav duration (seconds)
+    audio_speedup: float = 1.0                # applied speedup (1.0 = untouched)
+    new_start: Optional[float] = None         # revised timeline start
+    new_end: Optional[float] = None           # revised timeline end
+    video_speed: float = 1.0                  # per-segment video playback speed
+    slot_drift_ms: float = 0.0               # new_slot - actual_tts (ms)
+    slot_status: str = ""                     # "ok" | "warn" | "fail"
 
     # Timing
     @property
     def duration(self) -> float:
         return self.end - self.start
+
+    @property
+    def new_duration(self) -> float:
+        """Revised slot duration after recompute, or original if untouched."""
+        if self.new_start is not None and self.new_end is not None:
+            return self.new_end - self.new_start
+        return self.duration
 
     @property
     def word_count(self) -> int:
@@ -96,6 +113,15 @@ class Cue:
             "qc_flags": self.qc_flags,
             "emotion": self.emotion,
             "duration": self.duration,
+            # Slot recompute data (present only after slot_recompute runs)
+            "tts_duration": self.tts_duration,
+            "audio_speedup": self.audio_speedup,
+            "new_start": self.new_start,
+            "new_end": self.new_end,
+            "new_duration": self.new_duration,
+            "video_speed": self.video_speed,
+            "slot_drift_ms": self.slot_drift_ms,
+            "slot_status": self.slot_status,
         }
 
     def to_tts_row(self) -> dict:
@@ -134,3 +160,13 @@ PAUSE_SOFT_MS = 300    # Candidate break when cue is already long
 PAUSE_STRONG_MS = 500  # Always a break candidate
 MERGE_MIN_WORDS = 4
 MERGE_MIN_DUR = 0.6
+
+# ── AV Sync Slot Recompute ─────────────────────────────────────────────
+AV_SYNC_MODES = ("original", "capped", "audio_first")
+DEFAULT_AV_SYNC_MODE = "original"       # off — old trim behavior
+MAX_AUDIO_SPEEDUP = 1.30                # only used when mode = "capped"
+MIN_VIDEO_SPEED = 0.70                  # floor before flagging segment
+SLOT_VERIFY_MODES = ("off", "dry_run", "auto_fix", "post_verify")
+DEFAULT_SLOT_VERIFY = "off"
+SLOT_DRIFT_WARN_MS = 50                 # ⚠ warning threshold
+SLOT_DRIFT_FAIL_MS = 200                # ✗ failure threshold

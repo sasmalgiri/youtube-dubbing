@@ -56,6 +56,10 @@ backend/work/
 backend/.venv/
 backend/.env
 
+# YouTube login cookies — NEVER commit (anyone with this file can sign in as you)
+cookies.txt
+backend/cookies.txt
+
 # Logs
 *.log
 
@@ -69,5 +73,16 @@ backend/dubbed_outputs/
 backend/cache/
 backend/work/
 backend/jobs.db
+backend/jobs.db-shm
+backend/jobs.db-wal
 CosyVoice/
 .claude/worktrees/
+.claude/scheduled_tasks.lock
+
+# Runtime state & personal data (never commit)
+backend/completed_urls.json
+backend/saved_links.json
+backend/translation_glossary.json
+backend/logs/
+backend/fish-speech/
+.next/

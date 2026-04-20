@@ -1,16 +1,20 @@
 """
 Content-hash caching for the dubbing pipeline.
 
-Caches expensive operations by SHA-256 hash of their inputs:
-  - ASR results: audio SHA-256 → List[segment dicts]
-  - Translation: SHA-256(source_text + engine + target_lang) → translated string
-  - TTS wav: SHA-256(text + voice + rate) → .wav bytes
+DISABLED — user requested no reuse. Every job runs every step from scratch
+and the work artifacts are deleted at the end of each job.
 
-Cache lives in  backend/cache/  (or VOICEDUB_CACHE env var).
-Each entry is a small JSON or WAV file — never grows unboundedly because
-the hash is deterministic and the same input always maps to the same key.
+All get_* functions return None.
+All put_* functions are no-ops.
+The CACHE_DISABLED flag below is the single point of control —
+flip it back to False to re-enable caching.
 """
 from __future__ import annotations
+
+# Single point of control for the entire cache layer.
+# True  = no reads, no writes, every job is fresh.
+# False = original behavior (SHA-keyed reuse across jobs).
+CACHE_DISABLED = True
 
 import hashlib
 import json
@@ -58,6 +62,8 @@ def _sha256_str(*parts: str) -> str:
 
 def get_asr(audio_path: Path, model: str, language: str) -> Optional[List[dict]]:
     """Return cached ASR segments, or None if not cached."""
+    if CACHE_DISABLED:
+        return None
     key = _sha256_file(audio_path) + "_" + _sha256_str(model, language)
     cache_file = _ASR_DIR / f"{key}.json"
     if cache_file.exists():
@@ -72,6 +78,8 @@ def get_asr(audio_path: Path, model: str, language: str) -> Optional[List[dict]]
 
 def put_asr(audio_path: Path, model: str, language: str, segments: List[dict]) -> None:
     """Persist ASR segments to cache."""
+    if CACHE_DISABLED:
+        return
     key = _sha256_file(audio_path) + "_" + _sha256_str(model, language)
     cache_file = _ASR_DIR / f"{key}.json"
     try:
@@ -85,6 +93,8 @@ def put_asr(audio_path: Path, model: str, language: str, segments: List[dict]) -
 
 def get_translation(source_text: str, engine: str, target_lang: str) -> Optional[str]:
     """Return cached translation, or None if not cached."""
+    if CACHE_DISABLED:
+        return None
     key = _sha256_str(source_text, engine, target_lang)
     cache_file = _TRANS_DIR / f"{key}.txt"
     if cache_file.exists():
@@ -99,6 +109,8 @@ def get_translation(source_text: str, engine: str, target_lang: str) -> Optional
 
 def put_translation(source_text: str, engine: str, target_lang: str, translated: str) -> None:
     """Persist translated text to cache."""
+    if CACHE_DISABLED:
+        return
     key = _sha256_str(source_text, engine, target_lang)
     cache_file = _TRANS_DIR / f"{key}.txt"
     try:
@@ -112,6 +124,8 @@ def put_translation(source_text: str, engine: str, target_lang: str, translated:
 
 def get_tts(text: str, voice: str, rate: str, engine: str) -> Optional[bytes]:
     """Return cached TTS audio bytes, or None if not cached."""
+    if CACHE_DISABLED:
+        return None
     key = _sha256_str(text, voice, rate, engine)
     cache_file = _TTS_DIR / f"{key}.bin"
     if cache_file.exists():
@@ -126,6 +140,8 @@ def get_tts(text: str, voice: str, rate: str, engine: str) -> Optional[bytes]:
 
 def put_tts(text: str, voice: str, rate: str, engine: str, audio_bytes: bytes) -> None:
     """Persist TTS audio bytes to cache."""
+    if CACHE_DISABLED:
+        return
     key = _sha256_str(text, voice, rate, engine)
     cache_file = _TTS_DIR / f"{key}.bin"
     try:

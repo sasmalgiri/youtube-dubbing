@@ -3,16 +3,178 @@
 Text source:  Parakeet (best punctuation/capitalization)
 Timing source: WhisperX (best word-level alignment)
 Reconciled:   Parakeet text aligned to WhisperX timing
+
+Process isolation:
+    Both Parakeet (NeMo) and WhisperX (faster-whisper/CTranslate2) are run
+    in a *child process* via ``multiprocessing.Process``. The FastAPI server
+    imports this module, but never loads torch/nemo/ctranslate2 itself — so
+    a fatal native crash during model teardown (a known issue on Windows +
+    CUDA — see backend/logs/crashes/*.faulthandler) can only kill the child.
+    The server and the in-flight job thread stay alive and the error path
+    gets a normal Python exception.
 """
 from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional, Callable
 import re
+import json
+import tempfile
+import multiprocessing as mp
 
 from .contracts import Word
 
 
+# ── Child-process workers (top-level so they're picklable on Windows spawn) ──
+
+def _parakeet_child(wav_path_str: str, result_path: str):
+    """Child process: runs Parakeet in isolation, writes JSON result."""
+    try:
+        words = _run_parakeet_impl(Path(wav_path_str), on_progress=None)
+        payload = {
+            "words": [
+                {"text": w.text, "start": w.start, "end": w.end,
+                 "source": w.source, "confidence": w.confidence}
+                for w in words
+            ],
+            "error": None,
+        }
+    except Exception as exc:
+        payload = {"words": [], "error": f"{type(exc).__name__}: {exc}"}
+    try:
+        with open(result_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _whisperx_child(wav_path_str: str, language: str, model_size: str, result_path: str):
+    """Child process: runs WhisperX in isolation, writes JSON result.
+
+    Sets PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True before importing
+    torch so the CUDA caching allocator can grow instead of fragmenting —
+    this is the exact remediation the CUDA OOM error message suggests.
+    """
+    import os as _os
+    _os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    try:
+        words = _run_whisperx_impl(Path(wav_path_str), language=language,
+                                   model_size=model_size, on_progress=None)
+        payload = {
+            "words": [
+                {"text": w.text, "start": w.start, "end": w.end,
+                 "source": w.source, "confidence": w.confidence}
+                for w in words
+            ],
+            "error": None,
+        }
+    except Exception as exc:
+        payload = {"words": [], "error": f"{type(exc).__name__}: {exc}"}
+    try:
+        with open(result_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _run_in_child(target, args, timeout_sec: int, on_progress: Callable = None,
+                  label: str = "ASR") -> List[Word]:
+    """Spawn a child process, wait for it, parse result JSON → List[Word].
+
+    Any native crash in the child (SIGABRT from CTranslate2 / CUDA / NeMo
+    teardown) surfaces here as a non-zero exit code → RuntimeError, instead
+    of taking down the FastAPI process.
+
+    A heartbeat fires every 10s via ``on_progress`` so the job UI shows the
+    engine is still alive during the (potentially multi-minute) run — without
+    this, the runner's single "Running Whisper..." line looks like a hang.
+    """
+    import os as _os
+    import time as _time
+    fd, result_path = tempfile.mkstemp(suffix=".json", prefix="asr_result_")
+    _os.close(fd)
+    try:
+        p = mp.Process(target=target, args=(*args, result_path), daemon=True)
+        p.start()
+        if on_progress:
+            on_progress(f"{label}: child pid={p.pid} running...")
+
+        # Heartbeat loop — poll the child every 10s so the UI gets a live
+        # "still working (Ns elapsed)" message instead of a silent freeze.
+        t0 = _time.monotonic()
+        heartbeat_interval = 10.0
+        while True:
+            p.join(timeout=heartbeat_interval)
+            if not p.is_alive():
+                break
+            elapsed = _time.monotonic() - t0
+            if elapsed >= timeout_sec:
+                p.kill()
+                p.join(5)
+                raise RuntimeError(f"{label} child timed out after {timeout_sec}s")
+            if on_progress:
+                on_progress(f"{label}: still running ({int(elapsed)}s elapsed)...")
+        if p.exitcode != 0:
+            err = f"{label} child died with exit code {p.exitcode}"
+            try:
+                with open(result_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if data.get("error"):
+                        err = data["error"]
+            except Exception:
+                pass
+            raise RuntimeError(err)
+        with open(result_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("error"):
+            raise RuntimeError(data["error"])
+        out: List[Word] = []
+        for w in data.get("words", []):
+            out.append(Word(
+                text=w.get("text", ""),
+                start=float(w.get("start", 0)),
+                end=float(w.get("end", 0)),
+                source=w.get("source"),
+                confidence=w.get("confidence"),
+            ))
+        return out
+    finally:
+        try:
+            Path(result_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+# ── Public API (runs the workers in a child process) ─────────────────────────
+
 def run_parakeet(wav_path: Path, on_progress: Callable = None) -> List[Word]:
+    """Run Parakeet TDT in an isolated child process."""
+    if on_progress:
+        on_progress("Parakeet: spawning isolated worker...")
+    words = _run_in_child(_parakeet_child, (str(wav_path),),
+                          timeout_sec=1800, on_progress=on_progress,
+                          label="Parakeet")
+    if on_progress:
+        on_progress(f"Parakeet: {len(words)} words")
+    return words
+
+
+def run_whisperx(wav_path: Path, language: str = "en",
+                 model_size: str = "large-v3",
+                 on_progress: Callable = None) -> List[Word]:
+    """Run WhisperX / faster-whisper in an isolated child process."""
+    if on_progress:
+        on_progress(f"Whisper ({model_size}): spawning isolated worker...")
+    words = _run_in_child(_whisperx_child, (str(wav_path), language, model_size),
+                          timeout_sec=1800, on_progress=on_progress,
+                          label=f"Whisper {model_size}")
+    if on_progress:
+        on_progress(f"Whisper: {len(words)} words")
+    return words
+
+
+# ── In-process implementations (ONLY called from child processes) ────────────
+
+def _run_parakeet_impl(wav_path: Path, on_progress: Callable = None) -> List[Word]:
     """Run NVIDIA Parakeet TDT — returns words with timestamps."""
     try:
         import nemo.collections.asr as nemo_asr
@@ -59,119 +221,121 @@ def run_parakeet(wav_path: Path, on_progress: Callable = None) -> List[Word]:
     return words
 
 
-def run_whisperx(wav_path: Path, language: str = "en",
-                 model_size: str = "large-v3",
-                 on_progress: Callable = None) -> List[Word]:
-    """Run faster-whisper + WhisperX alignment — returns words with precise timing."""
+def _run_whisperx_impl(wav_path: Path, language: str = "en",
+                       model_size: str = "large-v3",
+                       on_progress: Callable = None) -> List[Word]:
+    """Run faster-whisper transcription. Returns words with timing.
+
+    Runs on CUDA with int8_float16 if available (~50% less VRAM than float16
+    with no meaningful accuracy loss — the recommended compute for consumer
+    GPUs per the faster-whisper docs). Falls back to CPU int8 on OOM.
+
+    The old block that tried to also run `whisperx.align()` for forced
+    alignment is intentionally removed: it loaded a second model (wav2vec2)
+    on top of the Whisper model in the same process, and CTranslate2's GPU
+    allocator is outside PyTorch's accounting so `del model` + empty_cache
+    never actually reclaimed the Whisper workspace → double-loaded on 12 GB
+    cards and triggered 23+ GiB spillover into Windows shared GPU memory.
+    faster-whisper's own word_timestamps are precise enough; the DP cue
+    builder handles any remaining timing work downstream.
+    """
     from faster_whisper import WhisperModel
     import torch
 
-    device, compute = "cpu", "int8"
+    # Pre-clean any stale CUDA allocations inherited from the parent's
+    # import-time torch setup (shouldn't exist with Windows spawn, but
+    # this is cheap insurance).
     if torch.cuda.is_available():
-        device, compute = "cuda", "float16"
-
-    if on_progress:
-        on_progress(f"Loading Whisper {model_size} on {device.upper()}...")
-
-    model = WhisperModel(model_size, device=device, compute_type=compute)
-
-    if on_progress:
-        on_progress("Whisper: transcribing with VAD...")
-
-    kwargs = {
-        "vad_filter": True,
-        "word_timestamps": True,
-        "beam_size": 1,
-        "condition_on_previous_text": True,
-        "no_speech_threshold": 0.5,
-        "vad_parameters": {"min_silence_duration_ms": 300},
-    }
-    if language and language != "auto":
-        kwargs["language"] = language
-
-    seg_iter, info = model.transcribe(str(wav_path), **kwargs)
-
-    # Collect all words
-    words: List[Word] = []
-    for seg in seg_iter:
-        if hasattr(seg, "words") and seg.words:
-            for w in seg.words:
-                words.append(Word(
-                    text=w.word.strip(),
-                    start=float(w.start),
-                    end=float(w.end),
-                    source="whisperx",
-                    confidence=getattr(w, 'probability', None),
-                ))
-        else:
-            # Segment without word timestamps
-            words.append(Word(
-                text=seg.text.strip(),
-                start=float(seg.start),
-                end=float(seg.end),
-                source="whisperx",
-            ))
-
-    del model
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    # Optional: run WhisperX forced alignment for better timing
-    try:
-        import whisperx
-
-        if on_progress:
-            on_progress("WhisperX: forced alignment...")
-
-        lang = language if language and language != "auto" else "en"
-        align_model, metadata = whisperx.load_align_model(
-            language_code=lang,
-            device="cuda" if torch.cuda.is_available() else "cpu"
-        )
-        # Build segments for alignment
-        segments_for_align = []
-        current_seg = {"start": 0, "end": 0, "text": ""}
-        for w in words:
-            if w.start - current_seg["end"] > 1.0 and current_seg["text"]:
-                segments_for_align.append(current_seg)
-                current_seg = {"start": w.start, "end": w.end, "text": w.text}
-            else:
-                if not current_seg["text"]:
-                    current_seg["start"] = w.start
-                current_seg["text"] += " " + w.text
-                current_seg["end"] = w.end
-        if current_seg["text"]:
-            segments_for_align.append(current_seg)
-
-        result = whisperx.align(
-            segments_for_align,
-            align_model, metadata,
-            whisperx.load_audio(str(wav_path)),
-            "cuda" if torch.cuda.is_available() else "cpu",
-        )
-
-        # Replace words with aligned versions
-        aligned_words = []
-        for seg in result.get("segments", []):
-            for w in seg.get("words", []):
-                aligned_words.append(Word(
-                    text=w.get("word", "").strip(),
-                    start=float(w.get("start", 0)),
-                    end=float(w.get("end", 0)),
-                    source="whisperx",
-                    confidence=w.get("score", None),
-                ))
-        if aligned_words:
-            words = aligned_words
-
-        del align_model
-        if torch.cuda.is_available():
+        try:
             torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
 
-    except ImportError:
-        pass  # WhisperX not installed, use faster-whisper timing
+    def _load_and_transcribe(device: str, compute: str) -> List[Word]:
+        if on_progress:
+            on_progress(f"Loading Whisper {model_size} on {device.upper()} ({compute})...")
+        model = WhisperModel(model_size, device=device, compute_type=compute)
+        try:
+            if on_progress:
+                on_progress("Whisper: transcribing with VAD...")
+            kwargs = {
+                "vad_filter": True,
+                "word_timestamps": True,
+                "beam_size": 1,
+                # Disabled: the KV-cache accumulation across 30s windows is
+                # a known VRAM-growth source on long videos and a common
+                # OOM trigger on consumer GPUs. Accuracy impact on clean
+                # English audio is negligible.
+                "condition_on_previous_text": False,
+                "no_speech_threshold": 0.5,
+                "vad_parameters": {"min_silence_duration_ms": 300},
+            }
+            if language and language != "auto":
+                kwargs["language"] = language
 
-    return words
+            seg_iter, _info = model.transcribe(str(wav_path), **kwargs)
+
+            out: List[Word] = []
+            for seg in seg_iter:
+                if hasattr(seg, "words") and seg.words:
+                    for w in seg.words:
+                        out.append(Word(
+                            text=w.word.strip(),
+                            start=float(w.start),
+                            end=float(w.end),
+                            source="whisperx",
+                            confidence=getattr(w, 'probability', None),
+                        ))
+                else:
+                    out.append(Word(
+                        text=seg.text.strip(),
+                        start=float(seg.start),
+                        end=float(seg.end),
+                        source="whisperx",
+                    ))
+            return out
+        finally:
+            # Best-effort release. CTranslate2 does its own cleanup when the
+            # model object is collected; nothing Python can do beyond this
+            # other than exiting the process (which the child will, shortly).
+            try:
+                del model
+            except Exception:
+                pass
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
+                except Exception:
+                    pass
+
+    # GPU → CPU fallback chain. If CUDA OOMs (or any other runtime error),
+    # retry on CPU so the job still completes instead of the child dying
+    # and the user having to manually re-submit with a smaller model.
+    cuda_ok = False
+    try:
+        cuda_ok = torch.cuda.is_available()
+    except Exception:
+        cuda_ok = False
+
+    if cuda_ok:
+        try:
+            return _load_and_transcribe("cuda", "int8_float16")
+        except Exception as e:
+            msg = str(e).lower()
+            if "out of memory" in msg or "cuda" in msg or "cublas" in msg:
+                if on_progress:
+                    on_progress(f"CUDA failed ({type(e).__name__}) — retrying on CPU...")
+                try:
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
+                except Exception:
+                    pass
+                return _load_and_transcribe("cpu", "int8")
+            raise
+
+    return _load_and_transcribe("cpu", "int8")
 
 
 def reconcile(parakeet_words: List[Word], whisperx_words: List[Word]) -> List[Word]:
