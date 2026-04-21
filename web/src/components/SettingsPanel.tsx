@@ -2518,12 +2518,14 @@ export default function SettingsPanel({ settings, onChange, targetLanguage = 'hi
                             <div>
                                 <p className="text-xs text-text-secondary mb-0.5">Split Long Videos</p>
                                 <p className="text-[10px] text-text-muted mb-1.5">Breaks the video into N-minute parts and dubs each separately, then joins them. Strongly recommended for videos over 1 hour to avoid memory issues. <b>Default: 30 min.</b></p>
-                                <div className="grid grid-cols-4 gap-2">
+                                <div className="grid grid-cols-3 gap-2">
                                     {[
                                         { value: 0, label: 'Off', desc: 'No splitting' },
                                         { value: 30, label: '30 min', desc: 'Split every 30m' },
                                         { value: 40, label: '40 min', desc: 'Split every 40m' },
-                                        { value: 60, label: '60 min', desc: 'Split every 1h' },
+                                        { value: 60, label: '1 hour', desc: 'Split every 1h' },
+                                        { value: 120, label: '2 hours', desc: 'Split every 2h' },
+                                        { value: 180, label: '3 hours', desc: 'Split every 3h' },
                                     ].map((m) => (
                                         <button
                                             type="button"
