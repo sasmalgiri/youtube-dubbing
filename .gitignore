@@ -42,6 +42,9 @@ input/*.mkv
 input/*.mov
 input/*.webm
 voices/my_voice_refs/*.wav
+voices/my_voice_refs/*.mp3
+backend/voices/my_voice_refs/*.wav
+backend/voices/my_voice_refs/*.mp3
 
 # Web (Next.js)
 web/node_modules/

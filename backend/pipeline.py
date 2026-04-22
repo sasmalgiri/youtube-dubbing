@@ -10287,6 +10287,44 @@ class Pipeline:
         """
         if work_dir is None:
             work_dir = self.cfg.work_dir
+
+        # Pre-flight: fail fast with actionable messages instead of crashing
+        # mid-inference with a cryptic error. Reference picking is also done
+        # up here so we know we have usable clone input *before* loading 2GB
+        # of model weights to the GPU.
+        from dubbing.clone_check import (
+            check_xtts_prerequisites,
+            pick_reference_audio,
+            validate_reference_audio,
+        )
+
+        diag = check_xtts_prerequisites(self.cfg.target_language)
+        if not diag.ok:
+            raise RuntimeError(f"XTTS preflight failed: {diag.reason}")
+
+        # Build / locate the reference clip *before* model load. If we can't
+        # produce a valid reference, bail out cleanly so the outer cascade
+        # falls to the next engine instead of loading XTTS and then failing.
+        user_ref_dir = Path(__file__).resolve().parent / "voices" / "my_voice_refs"
+        picked_ref = pick_reference_audio(
+            ffmpeg=self._ffmpeg,
+            audio_raw=self.cfg.work_dir / "audio_raw.wav",
+            work_dir=self.cfg.work_dir,
+            user_ref_dir=user_ref_dir,
+            report=self._report,
+        )
+        if picked_ref is None:
+            raise RuntimeError(
+                "XTTS cloning needs a reference clip but none could be built. "
+                "Make sure audio_raw.wav was extracted (check earlier pipeline "
+                f"stages), or drop a 6-15s WAV into {user_ref_dir} for a "
+                "custom reference."
+            )
+        ok, reason = validate_reference_audio(self._ffmpeg, picked_ref)
+        if not ok:
+            raise RuntimeError(f"XTTS reference validation failed: {reason}")
+        self._report("synthesize", 0.03, f"Voice-clone reference ready: {reason}")
+
         import torch
         import torchaudio
         # Accept Coqui TOS automatically (non-interactive server environment)
@@ -10335,27 +10373,10 @@ class Pipeline:
                     self._report("synthesize", 0.04,
                                  f"Found {len(speaker_ref_map)} per-speaker voice references for cloning")
 
-            # Default reference: single voice from original audio
-            ref_wav = self.cfg.work_dir / "voice_ref.wav"
-            audio_raw = self.cfg.work_dir / "audio_raw.wav"
-            if not ref_wav.exists() and audio_raw.exists():
-                self._run_proc(
-                    [self._ffmpeg, "-y", "-i", str(audio_raw),
-                     "-t", "15", "-ar", "22050", "-ac", "1",
-                     str(ref_wav)],
-                    check=True, capture_output=True,
-                )
-
-            # Check if we also have a user-provided reference in voices/
-            user_ref = Path(__file__).resolve().parent / "voices" / "my_voice_refs"
-            if user_ref.exists():
-                ref_files = list(user_ref.glob("*.wav")) + list(user_ref.glob("*.mp3"))
-                if ref_files:
-                    ref_wav = ref_files[0]
-                    self._report("synthesize", 0.05, f"Using custom voice reference: {ref_wav.name}")
-
-            if not ref_wav.exists() and not speaker_ref_map:
-                raise RuntimeError("No voice reference available for XTTS voice cloning")
+            # Reference was built + validated above via clone_check.pick_reference_audio.
+            # Use that instead of the old first-15s-of-raw-audio heuristic that
+            # typically latched onto intro music / logos and poisoned the clone.
+            ref_wav = picked_ref
 
             # Map language codes for XTTS
             XTTS_LANG_MAP = {
