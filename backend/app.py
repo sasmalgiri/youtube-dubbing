@@ -307,6 +307,7 @@ class JobCreateRequest(BaseModel):
     tts_word_match_verify: bool = True
     tts_word_match_tolerance: float = 0.15
     tts_word_match_model: str = "auto"  # "auto" | "tiny" | "turbo"
+    tts_word_match_max_segments: int = 1000  # auto-off above N; 0 = no cap
     # Long-segment trace watchdog: records full lifecycle of every long
     # segment to a JSON report. Cheap, on by default.
     long_segment_trace: bool = True
@@ -322,7 +323,7 @@ class JobCreateRequest(BaseModel):
     # "auto" (default) = compute tts_rate from word count + source duration.
     # "manual"         = use the Speech Rate slider value as-is.
     tts_rate_mode: str = "auto"
-    tts_rate_ceiling: str = "+50%"
+    tts_rate_ceiling: str = "+25%"
     tts_rate_target_wpm: int = 130
     purge_on_new_url: bool = False     # When True: delete prior job's work_dir + caches when a different URL is submitted
     step_by_step: bool = False         # Pause after transcription & translation for review
@@ -937,6 +938,7 @@ def _run_job(job: Job, req: JobCreateRequest):
             tts_word_match_verify=getattr(req, 'tts_word_match_verify', False),
             tts_word_match_tolerance=getattr(req, 'tts_word_match_tolerance', 0.15),
             tts_word_match_model=getattr(req, 'tts_word_match_model', 'auto'),
+            tts_word_match_max_segments=getattr(req, 'tts_word_match_max_segments', 1000),
             long_segment_trace=getattr(req, 'long_segment_trace', True),
             long_segment_threshold_words=getattr(req, 'long_segment_threshold_words', 15),
             tts_no_time_pressure=getattr(req, 'tts_no_time_pressure', True),
@@ -945,7 +947,7 @@ def _run_job(job: Job, req: JobCreateRequest):
             tts_dynamic_max=getattr(req, 'tts_dynamic_max', 120),
             tts_dynamic_start=getattr(req, 'tts_dynamic_start', 30),
             tts_rate_mode=getattr(req, 'tts_rate_mode', 'auto'),
-            tts_rate_ceiling=getattr(req, 'tts_rate_ceiling', '+50%'),
+            tts_rate_ceiling=getattr(req, 'tts_rate_ceiling', '+25%'),
             tts_rate_target_wpm=getattr(req, 'tts_rate_target_wpm', 130),
             srt_needs_translation=req.srt_needs_translation,
             # ── AV Sync Modules ──
@@ -1623,6 +1625,7 @@ def _run_job_split(job: Job, req: JobCreateRequest, voice: str):
             tts_word_match_verify=getattr(req, 'tts_word_match_verify', False),
             tts_word_match_tolerance=getattr(req, 'tts_word_match_tolerance', 0.15),
             tts_word_match_model=getattr(req, 'tts_word_match_model', 'auto'),
+            tts_word_match_max_segments=getattr(req, 'tts_word_match_max_segments', 1000),
             long_segment_trace=getattr(req, 'long_segment_trace', True),
             long_segment_threshold_words=getattr(req, 'long_segment_threshold_words', 15),
             tts_no_time_pressure=getattr(req, 'tts_no_time_pressure', True),
@@ -1631,7 +1634,7 @@ def _run_job_split(job: Job, req: JobCreateRequest, voice: str):
             tts_dynamic_max=getattr(req, 'tts_dynamic_max', 120),
             tts_dynamic_start=getattr(req, 'tts_dynamic_start', 30),
             tts_rate_mode=getattr(req, 'tts_rate_mode', 'auto'),
-            tts_rate_ceiling=getattr(req, 'tts_rate_ceiling', '+50%'),
+            tts_rate_ceiling=getattr(req, 'tts_rate_ceiling', '+25%'),
             tts_rate_target_wpm=getattr(req, 'tts_rate_target_wpm', 130),
             srt_needs_translation=req.srt_needs_translation,
             av_sync_mode=getattr(req, 'av_sync_mode', 'original'),
@@ -1757,6 +1760,7 @@ def _run_job_split(job: Job, req: JobCreateRequest, voice: str):
             tts_word_match_verify=getattr(req, 'tts_word_match_verify', False),
             tts_word_match_tolerance=getattr(req, 'tts_word_match_tolerance', 0.15),
             tts_word_match_model=getattr(req, 'tts_word_match_model', 'auto'),
+            tts_word_match_max_segments=getattr(req, 'tts_word_match_max_segments', 1000),
             long_segment_trace=getattr(req, 'long_segment_trace', True),
             long_segment_threshold_words=getattr(req, 'long_segment_threshold_words', 15),
             tts_no_time_pressure=getattr(req, 'tts_no_time_pressure', True),
@@ -1765,7 +1769,7 @@ def _run_job_split(job: Job, req: JobCreateRequest, voice: str):
             tts_dynamic_max=getattr(req, 'tts_dynamic_max', 120),
             tts_dynamic_start=getattr(req, 'tts_dynamic_start', 30),
             tts_rate_mode=getattr(req, 'tts_rate_mode', 'auto'),
-            tts_rate_ceiling=getattr(req, 'tts_rate_ceiling', '+50%'),
+            tts_rate_ceiling=getattr(req, 'tts_rate_ceiling', '+25%'),
             tts_rate_target_wpm=getattr(req, 'tts_rate_target_wpm', 130),
             srt_needs_translation=req.srt_needs_translation,
             av_sync_mode=getattr(req, 'av_sync_mode', 'original'),
@@ -1897,7 +1901,7 @@ def _queue_chain_next(parent_job: Job):
         simplify_english=getattr(_orig, 'simplify_english', False) if _orig else False,
         tts_no_time_pressure=getattr(_orig, 'tts_no_time_pressure', True) if _orig else True,
         tts_rate_mode=getattr(_orig, 'tts_rate_mode', 'auto') if _orig else 'auto',
-        tts_rate_ceiling=getattr(_orig, 'tts_rate_ceiling', '+50%') if _orig else '+50%',
+        tts_rate_ceiling=getattr(_orig, 'tts_rate_ceiling', '+25%') if _orig else '+25%',
         tts_rate_target_wpm=getattr(_orig, 'tts_rate_target_wpm', 130) if _orig else 130,
         tts_truncation_threshold=getattr(_orig, 'tts_truncation_threshold', 0.30) if _orig else 0.30,
         tts_word_match_verify=getattr(_orig, 'tts_word_match_verify', True) if _orig else True,
@@ -2582,6 +2586,7 @@ def _run_job_with_srt(job: Job, req: JobCreateRequest, srt_path: Path):
             tts_word_match_verify=getattr(req, 'tts_word_match_verify', False),
             tts_word_match_tolerance=getattr(req, 'tts_word_match_tolerance', 0.15),
             tts_word_match_model=getattr(req, 'tts_word_match_model', 'auto'),
+            tts_word_match_max_segments=getattr(req, 'tts_word_match_max_segments', 1000),
             long_segment_trace=getattr(req, 'long_segment_trace', True),
             long_segment_threshold_words=getattr(req, 'long_segment_threshold_words', 15),
             tts_no_time_pressure=getattr(req, 'tts_no_time_pressure', True),
@@ -2590,7 +2595,7 @@ def _run_job_with_srt(job: Job, req: JobCreateRequest, srt_path: Path):
             tts_dynamic_max=getattr(req, 'tts_dynamic_max', 120),
             tts_dynamic_start=getattr(req, 'tts_dynamic_start', 30),
             tts_rate_mode=getattr(req, 'tts_rate_mode', 'auto'),
-            tts_rate_ceiling=getattr(req, 'tts_rate_ceiling', '+50%'),
+            tts_rate_ceiling=getattr(req, 'tts_rate_ceiling', '+25%'),
             tts_rate_target_wpm=getattr(req, 'tts_rate_target_wpm', 130),
             srt_needs_translation=req.srt_needs_translation,
             # ── AV Sync Modules ──
@@ -3393,12 +3398,13 @@ def _run_resume(job: Job):
             simplify_english=req.simplify_english if req else True,
             tts_no_time_pressure=getattr(req, 'tts_no_time_pressure', True) if req else True,
             tts_rate_mode=getattr(req, 'tts_rate_mode', 'auto') if req else 'auto',
-            tts_rate_ceiling=getattr(req, 'tts_rate_ceiling', '+50%') if req else '+50%',
+            tts_rate_ceiling=getattr(req, 'tts_rate_ceiling', '+25%') if req else '+25%',
             tts_rate_target_wpm=getattr(req, 'tts_rate_target_wpm', 130) if req else 130,
             tts_truncation_threshold=getattr(req, 'tts_truncation_threshold', 0.30) if req else 0.30,
             tts_word_match_verify=getattr(req, 'tts_word_match_verify', True) if req else True,
             tts_word_match_tolerance=getattr(req, 'tts_word_match_tolerance', 0.15) if req else 0.15,
             tts_word_match_model=getattr(req, 'tts_word_match_model', 'auto') if req else 'auto',
+            tts_word_match_max_segments=getattr(req, 'tts_word_match_max_segments', 1000) if req else 1000,
             tts_dynamic_workers=getattr(req, 'tts_dynamic_workers', True) if req else True,
             tts_dynamic_min=getattr(req, 'tts_dynamic_min', 10) if req else 10,
             tts_dynamic_max=getattr(req, 'tts_dynamic_max', 120) if req else 120,
@@ -3917,11 +3923,31 @@ from dubbing.presets import (
     list_presets as _list_presets,
     delete_preset as _delete_preset,
 )
+from dubbing.builtin_presets import (
+    list_builtin_presets as _list_builtin_presets,
+    get_builtin_preset as _get_builtin_preset,
+)
 
 @app.get("/api/presets")
 def get_presets():
     """List all saved presets (name + slug)."""
     return {"presets": _list_presets(WORK_ROOT)}
+
+
+@app.get("/api/presets/builtin")
+def get_builtin_presets_list():
+    """List built-in read-only quality presets."""
+    return {"presets": _list_builtin_presets()}
+
+
+@app.get("/api/presets/builtin/{slug}")
+def get_builtin_preset_detail(slug: str):
+    """Load a built-in preset's full settings by slug."""
+    data = _get_builtin_preset(slug)
+    if not data:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=404, content={"error": f"Built-in preset '{slug}' not found"})
+    return data
 
 @app.get("/api/presets/{slug}")
 def get_preset(slug: str):

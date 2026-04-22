@@ -782,8 +782,9 @@ class PipelineConfig:
     # Fast assemble: use in-memory bytearray (instant) vs ffmpeg adelay+amix (slower, preserves overlaps)
     fast_assemble: bool = False
     # Pronunciation dictionary: JSON file mapping source terms → target phonetic spellings
-    # Example: {"Pikachu": "Pikachu", "GPT": "जी-पी-टी"}
-    pronunciation_path: str = ""
+    # Example: {"Pikachu": "पिकाचू", "GPT": "जी-पी-टी"}
+    # Default points to the bundled backend/pronunciation.json seed (~110 common terms).
+    pronunciation_path: str = "backend/pronunciation.json"
     # Manual review queue: save JSON of segments that failed QC after all retries
     enable_manual_review: bool = False
     # WhisperX forced alignment: refine word-level timestamps after transcription
@@ -835,6 +836,10 @@ class PipelineConfig:
     # natural variance on Hindi (contractions, quiet syllables, number forms),
     # so 0.0 will cause false retries on segments that are actually fine.
     tts_word_match_tolerance: float = 0.15
+    # Auto-disable the word-match verifier above this segment count. Short
+    # videos benefit (~10-15% of segments catch a bad TTS); long videos spend
+    # 7-25 minutes on verification for marginal quality gain. 0 = no cap.
+    tts_word_match_max_segments: int = 1000
     # Whisper model for the post-TTS verifier:
     #   "auto"  — large-v3-turbo on GPU (best accuracy + reasonable speed),
     #             tiny on CPU (only fast option without a GPU). DEFAULT.
@@ -886,10 +891,10 @@ class PipelineConfig:
     #             stretching in assembly (audio_priority mode).
     # Default: "auto" — per user request 2026-04-12.
     tts_rate_mode: str = "auto"
-    # Maximum rate the auto mode is allowed to produce. User selected +50%
-    # (1.5x) as the ceiling — beyond this, audio quality degrades and the
-    # extra time is absorbed by video stretching instead of faster speech.
-    tts_rate_ceiling: str = "+50%"
+    # Maximum rate the auto mode is allowed to produce. Above ~+25% Hindi TTS
+    # starts to sound squeaky/robotic. Overflow beyond the ceiling is absorbed
+    # by video stretching (audio_priority path) instead of faster speech.
+    tts_rate_ceiling: str = "+25%"
     # Natural speaking rate (WPM) used as the "1.0x" baseline for auto rate
     # math. Hindi conversational pace is ~130 WPM, narration is ~120, fast
     # banter is ~180. 130 is a safe default. Can be tuned per project.
@@ -10810,6 +10815,17 @@ class Pipeline:
         if not getattr(self.cfg, "tts_word_match_verify", False):
             return None
         if not tts_data:
+            return None
+
+        # Auto-disable above the threshold — verifier cost is linear in segment
+        # count and pays back less per extra segment on long videos.
+        max_segments = int(getattr(self.cfg, "tts_word_match_max_segments", 0) or 0)
+        if max_segments > 0 and len(tts_data) > max_segments:
+            self._report(
+                "verify", 0.0,
+                f"Word-match verify auto-disabled: {len(tts_data)} segments > "
+                f"threshold {max_segments} (would add ~{len(tts_data) * 200 // 1000}s on CPU)",
+            )
             return None
 
         tolerance = float(getattr(self.cfg, "tts_word_match_tolerance", 0.15))

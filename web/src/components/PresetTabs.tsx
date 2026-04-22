@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getPresets, getPreset, savePreset, deletePreset, type Preset } from '@/lib/api';
+import { getPresets, getPreset, savePreset, deletePreset, getBuiltinPresets, getBuiltinPreset, type Preset } from '@/lib/api';
 import type { DubbingSettings } from './SettingsPanel';
 
 interface PresetTabsProps {
@@ -16,6 +16,7 @@ const MAX_PRESETS = 8;
 
 export default function PresetTabs({ currentSettings, onApply, onLanguageChange, sourceLanguage, targetLanguage }: PresetTabsProps) {
     const [presets, setPresets] = useState<Preset[]>([]);
+    const [builtinPresets, setBuiltinPresets] = useState<Preset[]>([]);
     const [activeSlug, setActiveSlug] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
     const [showNameInput, setShowNameInput] = useState(false);
@@ -24,13 +25,14 @@ export default function PresetTabs({ currentSettings, onApply, onLanguageChange,
     const selectGenRef = useRef(0);
 
     const loadPresets = useCallback(async () => {
-        const list = await getPresets();
-        setPresets(list);
+        const [user, builtin] = await Promise.all([getPresets(), getBuiltinPresets()]);
+        setPresets(user);
+        setBuiltinPresets(builtin);
     }, []);
 
     useEffect(() => { loadPresets(); }, [loadPresets]);
 
-    const handleSelectPreset = async (slug: string) => {
+    const handleSelectPreset = async (slug: string, builtin = false) => {
         // Click active preset again to deselect
         if (activeSlug === slug) {
             setActiveSlug(null);
@@ -38,7 +40,7 @@ export default function PresetTabs({ currentSettings, onApply, onLanguageChange,
             return;
         }
         const gen = ++selectGenRef.current;
-        const data = await getPreset(slug);
+        const data = builtin ? await getBuiltinPreset(slug) : await getPreset(slug);
         if (gen !== selectGenRef.current) return; // stale response, discard
         if (data?.settings) {
             // Separate language keys from settings to avoid leaking into DubbingSettings
@@ -118,6 +120,35 @@ export default function PresetTabs({ currentSettings, onApply, onLanguageChange,
                         <span className="text-[10px] text-text-muted">({presets.length}/{MAX_PRESETS})</span>
                     </div>
                 </div>
+
+                {/* Built-in quality presets (read-only) */}
+                {builtinPresets.length > 0 && (
+                    <div className="mb-3">
+                        <p className="text-[10px] uppercase tracking-wide text-text-muted mb-1.5">Quality presets</p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                            {builtinPresets.map((p) => (
+                                <button
+                                    key={p.slug}
+                                    type="button"
+                                    onClick={() => handleSelectPreset(p.slug, true)}
+                                    title={p.description || p.name}
+                                    className={`px-4 py-2 rounded-xl text-xs font-medium transition-all border ${
+                                        activeSlug === p.slug
+                                            ? 'bg-violet-500/20 border-violet-500 text-violet-200'
+                                            : 'bg-violet-500/5 border-violet-500/20 text-violet-300 hover:bg-violet-500/10 hover:border-violet-500/40'
+                                    }`}
+                                >
+                                    {p.name}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {/* User-saved preset label */}
+                {builtinPresets.length > 0 && (
+                    <p className="text-[10px] uppercase tracking-wide text-text-muted mb-1.5">Your presets</p>
+                )}
 
                 {/* Preset tabs */}
                 <div className="flex items-center gap-2 flex-wrap">

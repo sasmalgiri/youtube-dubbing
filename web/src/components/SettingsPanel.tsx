@@ -47,6 +47,7 @@ export interface DubbingSettings {
     tts_word_match_verify: boolean;    // post-TTS Whisper word-count verification
     tts_word_match_tolerance: number;  // 0.0–1.0, ±N% wiggle room (default 0.15)
     tts_word_match_model: string;      // "auto" | "tiny" | "turbo"
+    tts_word_match_max_segments: number; // auto-disable above N cues (0 = no cap)
     long_segment_trace: boolean;       // record long-segment lifecycle to JSON
     long_segment_threshold_words: number; // segments above this many words get traced
     tts_no_time_pressure: boolean;     // skip ALL slot/speed pressure on TTS

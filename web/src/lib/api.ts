@@ -539,7 +539,9 @@ export async function deleteLink(id: string): Promise<SavedLink[]> {
 export interface Preset {
     name: string;
     slug: string;
+    description?: string;
     settings?: Record<string, unknown>;
+    builtin?: boolean;
 }
 
 export async function getPresets(): Promise<Preset[]> {
@@ -547,6 +549,19 @@ export async function getPresets(): Promise<Preset[]> {
     if (!res.ok) return [];
     const data = await res.json();
     return data.presets || [];
+}
+
+export async function getBuiltinPresets(): Promise<Preset[]> {
+    const res = await fetch(`${API_BASE}/api/presets/builtin`, { headers: { ...EXTRA_HEADERS } });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.presets || [];
+}
+
+export async function getBuiltinPreset(slug: string): Promise<Preset | null> {
+    const res = await fetch(`${API_BASE}/api/presets/builtin/${slug}`, { headers: { ...EXTRA_HEADERS } });
+    if (!res.ok) return null;
+    return res.json();
 }
 
 export async function getPreset(slug: string): Promise<Preset | null> {
