@@ -159,23 +159,22 @@ def _find_non_silent_window(ffmpeg: str, audio_path: Path,
     for m in re.finditer(r"silence_(start|end):\s*(-?\d+(?:\.\d+)?)", out):
         events.append((m.group(1), float(m.group(2))))
 
-    # Build a timeline of non-silent (speech) intervals from the silence markers.
-    # Start with a speech interval at 0.0; every silence_start ends it; every
-    # silence_end starts a new one.
+    # Build non-silent (speech) intervals from the silence markers. Audio
+    # starts in speech at t=0; every silence_start closes a speech interval,
+    # every silence_end opens one. The tail only exists if the audio ENDS in
+    # speech (last event was silence_end, or no events at all) — otherwise
+    # the final speech interval was already closed by the last silence_start.
     speech: List[Tuple[float, float]] = []
-    cur_start = 0.0
-    last_was_end = False
+    speech_start = 0.0
     for kind, t in events:
-        if kind == "start":
-            if t > cur_start:
-                speech.append((cur_start, t))
-            last_was_end = False
-        elif kind == "end":
-            cur_start = t
-            last_was_end = True
-    # Tail interval up to the end
-    if cur_start < total:
-        speech.append((cur_start, total))
+        if kind == "start":   # silence begins → speech interval closes here
+            if t > speech_start:
+                speech.append((speech_start, t))
+        elif kind == "end":   # silence ends → a new speech interval opens
+            speech_start = t
+    if (not events) or events[-1][0] == "end":
+        if speech_start < total:
+            speech.append((speech_start, total))
 
     # Pick the first speech region that:
     #   - starts at or after skip_intro (if none fit, relax to any)

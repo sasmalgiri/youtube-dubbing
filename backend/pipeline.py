@@ -783,8 +783,11 @@ class PipelineConfig:
     fast_assemble: bool = False
     # Pronunciation dictionary: JSON file mapping source terms → target phonetic spellings
     # Example: {"Pikachu": "पिकाचू", "GPT": "जी-पी-टी"}
-    # Default points to the bundled backend/pronunciation.json seed (~110 common terms).
-    pronunciation_path: str = "backend/pronunciation.json"
+    # Leave empty to use the bundled backend/pronunciation.json seed (~110 common
+    # terms). Resolved absolute via __file__ in Pipeline.__init__ so it works
+    # regardless of CWD (start.bat cd's into backend/ before launch, so a
+    # relative path here would double-nest to backend/backend/...).
+    pronunciation_path: str = ""
     # Manual review queue: save JSON of segments that failed QC after all retries
     enable_manual_review: bool = False
     # WhisperX forced alignment: refine word-level timestamps after transcription
@@ -10326,7 +10329,6 @@ class Pipeline:
         self._report("synthesize", 0.03, f"Voice-clone reference ready: {reason}")
 
         import torch
-        import torchaudio
         # Accept Coqui TOS automatically (non-interactive server environment)
         os.environ["COQUI_TOS_AGREED"] = "1"
         # Fix Windows encoding: Coqui TTS prints non-ASCII text to stdout/stderr
