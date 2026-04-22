@@ -86,6 +86,7 @@ backend/translation_glossary.json
 backend/google_tts_usage.json
 backend/logs/
 backend/fish-speech/
+backend/wav2lip/
 .next/
 
 # Google Cloud service-account JSONs — these are credentials, never commit

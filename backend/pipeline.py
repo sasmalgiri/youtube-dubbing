@@ -918,6 +918,15 @@ class PipelineConfig:
     yt_replace_mode: str = "diff"        # "full" (total replace) | "diff" (word-level fix)
     tts_chunk_words: int = 0             # 0=off, 4/8/12=chunk translated text before TTS
     gap_mode: str = "micro"              # "none" | "micro" | "full"
+    # ── Wav2Lip lip-sync post-processing ──
+    # When True, runs Wav2Lip on the assembled dubbed video to re-sync the
+    # speaker's lips to the dubbed audio. Requires:
+    #   - backend/wav2lip/ (clone https://github.com/Rudrabha/Wav2Lip)
+    #   - backend/wav2lip/checkpoints/wav2lip_gan.pth
+    #   - GPU (CPU is 10-20× realtime, impractical)
+    # If requirements aren't met the step is skipped and the original
+    # assembled video is kept — never a hard failure.
+    use_wav2lip: bool = False
 
 
 # ── Module-level spaCy loader (cached, lazy) ──
@@ -14520,6 +14529,29 @@ class Pipeline:
 
         cmd.append(str(output_path))
         self._run_proc(cmd, check=True, capture_output=True)
+
+        # Wav2Lip lip-sync post-process — opt-in, graceful skip when not set up.
+        if getattr(self.cfg, "use_wav2lip", False):
+            try:
+                from dubbing.wav2lip import apply_lipsync, is_available, availability_reason
+                if not is_available():
+                    self._report("lipsync", 0.0,
+                                 f"Wav2Lip requested but unavailable — {availability_reason()}. "
+                                 f"Keeping original video.")
+                else:
+                    lipsync_tmp = self.cfg.work_dir / "lipsync_output.mp4"
+                    ok = apply_lipsync(
+                        video_path=output_path,
+                        audio_path=audio_path,
+                        output_path=lipsync_tmp,
+                        work_dir=self.cfg.work_dir,
+                        report=self._report,
+                    )
+                    if ok and lipsync_tmp.exists() and lipsync_tmp.stat().st_size > 0:
+                        shutil.move(str(lipsync_tmp), str(output_path))
+            except Exception as e:
+                self._report("lipsync", 1.0,
+                             f"Wav2Lip hook failed: {e} — keeping original video")
 
 
 async def list_voices(language_filter: str = "hi"):

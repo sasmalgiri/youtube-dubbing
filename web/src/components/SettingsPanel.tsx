@@ -48,6 +48,7 @@ export interface DubbingSettings {
     tts_word_match_tolerance: number;  // 0.0–1.0, ±N% wiggle room (default 0.15)
     tts_word_match_model: string;      // "auto" | "tiny" | "turbo"
     tts_word_match_max_segments: number; // auto-disable above N cues (0 = no cap)
+    use_wav2lip?: boolean;             // Wav2Lip lip-sync post-process (opt-in, requires GPU + repo + checkpoint)
     long_segment_trace: boolean;       // record long-segment lifecycle to JSON
     long_segment_threshold_words: number; // segments above this many words get traced
     tts_no_time_pressure: boolean;     // skip ALL slot/speed pressure on TTS
@@ -989,6 +990,22 @@ export default function SettingsPanel({ settings, onChange, targetLanguage = 'hi
                                         className={`w-11 h-6 rounded-full transition-colors relative ${settings.use_whisperx ? 'bg-primary' : 'bg-white/10'}`}
                                     >
                                         <div className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${settings.use_whisperx ? 'translate-x-6' : 'translate-x-1'}`} />
+                                    </button>
+                                </div>
+
+                                {/* Wav2Lip lip-sync — post-assembly, opt-in. Needs GPU + backend/wav2lip/ + checkpoint */}
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <p className="text-sm text-text-primary">Wav2Lip Lip Sync</p>
+                                        <p className="text-xs text-text-muted">
+                                            Re-sync speaker&apos;s lips to dubbed audio (post-process). Needs GPU + manual setup: clone <span className="font-mono">Rudrabha/Wav2Lip</span> into <span className="font-mono">backend/wav2lip/</span> and place <span className="font-mono">wav2lip_gan.pth</span> in <span className="font-mono">checkpoints/</span>. Skipped gracefully if missing.
+                                        </p>
+                                    </div>
+                                    <button
+                                        type="button" title="Toggle Wav2Lip lip sync" onClick={() => update({ use_wav2lip: !settings.use_wav2lip } as any)}
+                                        className={`w-11 h-6 rounded-full transition-colors relative ${settings.use_wav2lip ? 'bg-primary' : 'bg-white/10'}`}
+                                    >
+                                        <div className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${settings.use_wav2lip ? 'translate-x-6' : 'translate-x-1'}`} />
                                     </button>
                                 </div>
 

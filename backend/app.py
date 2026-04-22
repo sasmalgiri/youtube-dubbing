@@ -308,6 +308,8 @@ class JobCreateRequest(BaseModel):
     tts_word_match_tolerance: float = 0.15
     tts_word_match_model: str = "auto"  # "auto" | "tiny" | "turbo"
     tts_word_match_max_segments: int = 1000  # auto-off above N; 0 = no cap
+    # Wav2Lip lip-sync post-process. Requires backend/wav2lip/ + checkpoint + GPU.
+    use_wav2lip: bool = False
     # Long-segment trace watchdog: records full lifecycle of every long
     # segment to a JSON report. Cheap, on by default.
     long_segment_trace: bool = True
@@ -939,6 +941,7 @@ def _run_job(job: Job, req: JobCreateRequest):
             tts_word_match_tolerance=getattr(req, 'tts_word_match_tolerance', 0.15),
             tts_word_match_model=getattr(req, 'tts_word_match_model', 'auto'),
             tts_word_match_max_segments=getattr(req, 'tts_word_match_max_segments', 1000),
+            use_wav2lip=getattr(req, 'use_wav2lip', False),
             long_segment_trace=getattr(req, 'long_segment_trace', True),
             long_segment_threshold_words=getattr(req, 'long_segment_threshold_words', 15),
             tts_no_time_pressure=getattr(req, 'tts_no_time_pressure', True),
@@ -1626,6 +1629,7 @@ def _run_job_split(job: Job, req: JobCreateRequest, voice: str):
             tts_word_match_tolerance=getattr(req, 'tts_word_match_tolerance', 0.15),
             tts_word_match_model=getattr(req, 'tts_word_match_model', 'auto'),
             tts_word_match_max_segments=getattr(req, 'tts_word_match_max_segments', 1000),
+            use_wav2lip=getattr(req, 'use_wav2lip', False),
             long_segment_trace=getattr(req, 'long_segment_trace', True),
             long_segment_threshold_words=getattr(req, 'long_segment_threshold_words', 15),
             tts_no_time_pressure=getattr(req, 'tts_no_time_pressure', True),
@@ -1761,6 +1765,7 @@ def _run_job_split(job: Job, req: JobCreateRequest, voice: str):
             tts_word_match_tolerance=getattr(req, 'tts_word_match_tolerance', 0.15),
             tts_word_match_model=getattr(req, 'tts_word_match_model', 'auto'),
             tts_word_match_max_segments=getattr(req, 'tts_word_match_max_segments', 1000),
+            use_wav2lip=getattr(req, 'use_wav2lip', False),
             long_segment_trace=getattr(req, 'long_segment_trace', True),
             long_segment_threshold_words=getattr(req, 'long_segment_threshold_words', 15),
             tts_no_time_pressure=getattr(req, 'tts_no_time_pressure', True),
@@ -2587,6 +2592,7 @@ def _run_job_with_srt(job: Job, req: JobCreateRequest, srt_path: Path):
             tts_word_match_tolerance=getattr(req, 'tts_word_match_tolerance', 0.15),
             tts_word_match_model=getattr(req, 'tts_word_match_model', 'auto'),
             tts_word_match_max_segments=getattr(req, 'tts_word_match_max_segments', 1000),
+            use_wav2lip=getattr(req, 'use_wav2lip', False),
             long_segment_trace=getattr(req, 'long_segment_trace', True),
             long_segment_threshold_words=getattr(req, 'long_segment_threshold_words', 15),
             tts_no_time_pressure=getattr(req, 'tts_no_time_pressure', True),
@@ -3405,6 +3411,7 @@ def _run_resume(job: Job):
             tts_word_match_tolerance=getattr(req, 'tts_word_match_tolerance', 0.15) if req else 0.15,
             tts_word_match_model=getattr(req, 'tts_word_match_model', 'auto') if req else 'auto',
             tts_word_match_max_segments=getattr(req, 'tts_word_match_max_segments', 1000) if req else 1000,
+            use_wav2lip=getattr(req, 'use_wav2lip', False) if req else False,
             tts_dynamic_workers=getattr(req, 'tts_dynamic_workers', True) if req else True,
             tts_dynamic_min=getattr(req, 'tts_dynamic_min', 10) if req else 10,
             tts_dynamic_max=getattr(req, 'tts_dynamic_max', 120) if req else 120,

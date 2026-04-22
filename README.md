@@ -146,6 +146,34 @@ Only add the keys for services you actually plan to use — any missing provider
 
 ---
 
+## Optional: Wav2Lip lip-sync
+
+Re-syncs the on-screen speaker's lips to the dubbed audio as a final post-process. Opt-in per job via the **Wav2Lip Lip Sync** toggle in Advanced Settings, or by setting `use_wav2lip: true` on the job request.
+
+**Requirements** (one-time setup):
+
+```bash
+# 1. Clone the Wav2Lip repo into backend/
+cd backend
+git clone https://github.com/Rudrabha/Wav2Lip.git wav2lip
+
+# 2. Download the checkpoint (wav2lip_gan.pth is higher quality)
+mkdir -p wav2lip/checkpoints
+# Fetch wav2lip_gan.pth from the Wav2Lip repo's README and place it here:
+#   backend/wav2lip/checkpoints/wav2lip_gan.pth
+
+# 3. Install Wav2Lip's Python dependencies
+pip install -r wav2lip/requirements.txt
+```
+
+**Hardware**: GPU strongly recommended — CPU inference is ~10-20× realtime and impractical for real-length videos.
+
+**Graceful failure**: If the repo is missing, the checkpoint isn't present, or inference fails for any reason (no face detected, subprocess error, timeout), the step is skipped and the original assembled video is kept. Never a hard job failure.
+
+Both `backend/wav2lip/` and the checkpoints are in `.gitignore` — never committed.
+
+---
+
 ## API surface
 
 | Method | Endpoint              | Purpose                         |
