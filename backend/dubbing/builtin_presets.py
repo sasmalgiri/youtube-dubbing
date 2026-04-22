@@ -221,6 +221,57 @@ _VOICE_CLONE_SAME = {
 }
 
 
+_HINDI_REVOICE_CLONE = {
+    "slug": "hindi-revoice-clone",
+    "name": "Hindi Re-Voice (Clone)",
+    "description": (
+        "Re-dub an existing Hindi video with a clone of the original speaker. "
+        "Whisper transcribes Hindi → translation skipped (same language) → "
+        "Coqui XTTS v2 re-speaks in the cloned voice → Wav2Lip re-syncs lips "
+        "to the new audio so video and audio match. To use a different voice "
+        "instead of cloning, switch the TTS engine in Advanced Settings — "
+        "Sarvam Bulbul v3 and Google Neural2 both support Hindi natively."
+    ),
+    "settings": {
+        "source_language": "hi",
+        "target_language": "hi",
+        "pipeline_mode": "classic",
+        # Cloning engine: XTTS v2 (supports Hindi, uses reference from source).
+        # Other Hindi-capable engines explicitly disabled so the Voice Clone
+        # preset doesn't accidentally fall through to a non-cloning path.
+        "use_coqui_xtts": True,
+        "use_edge_tts": False,
+        "use_sarvam_bulbul": False,
+        "use_google_tts": False,
+        "use_cosyvoice": False,
+        "use_chatterbox": False,
+        "use_elevenlabs": False,
+        # Preserve the cloned audio: no post-processing, no duration coercion.
+        "audio_untouchable": True,
+        "post_tts_level": "none",
+        "tts_rate_mode": "manual",
+        "tts_rate": "+0%",
+        "tts_word_match_verify": False,
+        "enable_manual_review": False,
+        # AV match: audio sets the pace, video stretches to match, Wav2Lip
+        # re-syncs the speaker's mouth to the re-voiced audio.
+        "audio_priority": True,
+        "video_slow_to_match": True,
+        "use_wav2lip": True,
+        # Hindi source — don't touch English-source-specific flags.
+        "simplify_english": False,
+        "keep_subject_english": False,
+        # Force Whisper transcription of the actual Hindi audio. Skipping
+        # YouTube subs here because captions are often edited/mistimed vs
+        # the real speech we need to re-voice.
+        "prefer_youtube_subs": False,
+        "use_yt_translate": False,
+        "use_whisperx": True,
+        "audio_bitrate": "256k",
+    },
+}
+
+
 _BUDGET = {
     "slug": "budget",
     "name": "Budget (Free-Tier Max)",
@@ -263,6 +314,7 @@ _BUILTIN_PRESETS: List[Dict] = [
     _YOUTUBE_PASSTHROUGH,
     _SRT_DIRECT,
     _VOICE_CLONE_SAME,
+    _HINDI_REVOICE_CLONE,
     _BUDGET,
 ]
 
